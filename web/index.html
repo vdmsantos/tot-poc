@@ -28,6 +28,7 @@
       align-items: center;
       justify-content: center;
       gap: 16px;
+      padding: 16px;
       background: var(--bg);
       color: var(--text);
       font-family: "gg sans", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -89,8 +90,10 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .mic-state { color: var(--text-muted); flex-shrink: 0; display: flex; }
-    .mic-state.muted { color: var(--red); }
+    .badges { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .badges .badge { display: flex; color: var(--text-muted); }
+    .badges .badge.muted { color: var(--red); }
+    .badges .badge.on { color: var(--green); }
 
     .join-wrap { padding: 8px 12px 14px; }
     button { font: inherit; cursor: pointer; border: none; }
@@ -152,7 +155,7 @@
     #screens video {
       display: block;
       width: 100%;
-      max-height: 90vh;
+      max-height: 70vh;
       object-fit: contain;
       border-radius: 8px;
       background: #000;
@@ -193,6 +196,21 @@
       color: #fff;
       text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
     }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 20px;
+      transform: translateX(-50%);
+      background: var(--bg-elevated);
+      color: var(--text);
+      border-left: 3px solid var(--red);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+    }
+    .toast[hidden] { display: none; }
   </style>
 </head>
 <body>
@@ -221,7 +239,7 @@
         <span class="dot"></span>
         <div class="voice-status-text">
           <div class="line1">Voz conectada</div>
-          <div class="line2">Sala de Voz</div>
+          <div id="voiceStatusDetail" class="line2">Sala de Voz</div>
         </div>
       </div>
       <div class="controls">
@@ -253,8 +271,11 @@
   </div>
 
   <div id="audios" hidden></div>
+  <div id="toast" class="toast" hidden></div>
 
   <script>
+    'use strict';
+
     // ==================== CONFIGURAÇÃO DE QUALIDADE ====================
     // Ajuste estes valores conforme sua necessidade.
     const CONFIG = {
@@ -275,6 +296,12 @@
       videoMaxHeight: 1080,
       videoMaxFps: 30,
 
+      // Áudio da tela compartilhada (aba/sistema). Enquanto ninguém está
+      // compartilhando, o canal fica reservado num bitrate mínimo pra não
+      // gastar banda à toa.
+      screenAudioBitrate: 128_000,
+      screenAudioIdleBitrate: 6_000,
+
       // Câmera: aparece em quadrados na grade acima da lista, então merece
       // uma resolução um pouco melhor que uma miniatura.
       cameraBitrate: 600_000,
@@ -291,36 +318,75 @@
     const leaveBtn = document.getElementById('leaveBtn');
     const joinWrapEl = document.getElementById('joinWrap');
     const voiceBarEl = document.getElementById('voiceBar');
+    const voiceDetailEl = document.getElementById('voiceStatusDetail');
     const hintEl = document.getElementById('hint');
     const participantsEl = document.getElementById('participants');
     const audiosEl = document.getElementById('audios');
     const screensEl = document.getElementById('screens');
     const cameraGridEl = document.getElementById('cameraGrid');
+    const toastEl = document.getElementById('toast');
 
-    const ICON_MIC_SMALL = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 19 11z"/></svg>';
-    const ICON_MIC_MUTED_SMALL = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 19 11z"/><line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+    const ICON_MIC = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 19 11z"/></svg>';
+    const ICON_MIC_MUTED = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 19 11z"/><line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+    const ICON_CAM = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M4 6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-2.4l4.2 2.8A1 1 0 0 0 21 15.6V8.4a1 1 0 0 0-1.55-.84L15 10.4V8a2 2 0 0 0-2-2H4z"/></svg>';
+    const ICON_SCREEN = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h5v2H7a1 1 0 1 0 0 2h10a1 1 0 1 0 0-2h-2v-2h5a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H4zm0 2h16v7H4V7z"/></svg>';
 
-    // Preenchidos depois de "Entrar na sala".
+    // ---- Conexão (preenchida depois de "Entrar na sala") ----------------
     let pc = null;
     let ws = null;
+    let myPeerId = null;
+    let localStream = null;
     let localAudioTrack = null;
-    let micEnabled = true;
-    let videoSender = null;
-    let placeholderVideoTrack = null;
-    let screenTrack = null;
-    let sharingScreen = false;
-    let remoteScreenEl = null; // <video> de quem está compartilhando agora (se for outra pessoa)
-    let otherCount = 0; // quantidade de OUTROS participantes, informada pelo servidor
-    const trackKinds = new Map(); // id da track (WebRTC) -> "screen" | "cam", avisado pelo servidor
 
+    // Senders reservados: cada tipo de mídia tem seu próprio canal desde o
+    // início, então ligar câmera/tela é só um replaceTrack().
+    let micSender = null;
+    let screenAudioSender = null;
+    let screenVideoSender = null;
     let cameraSender = null;
-    let placeholderCameraTrack = null;
-    let cameraTrack = null;
-    let cameraOn = false;
-    let localCameraPreviewEl = null;
-    let myStreamId = null; // id do nosso MediaStream local — usado pra identificar nossa câmera nos avisos de "parei a câmera"
-    const remoteCameras = new Map(); // streamId -> elemento <video> da câmera de outra pessoa
+    let placeholderScreenAudio = null;
+    let placeholderScreenVideo = null;
+    let placeholderCamera = null;
+    let silentAudioCtx = null;
 
+    let screenVideoTrack = null;
+    let screenAudioTrack = null;
+    let cameraTrack = null;
+    let localCameraStream = null;
+
+    let micEnabled = true;
+    let cameraOn = false;
+    let sharingScreen = false;
+    let awaitingShareGrant = false;
+
+    // Retrato da sala mandado pelo servidor. TODA a interface é desenhada a
+    // partir daqui: quem está na sala, quem está com câmera ligada e quem está
+    // compartilhando a tela. Como o servidor manda o retrato inteiro a cada
+    // mudança, quem entra depois vê exatamente o mesmo que quem já estava.
+    let room = { peers: [], tracks: [], screenSharer: '' };
+
+    // Mídia que já chegou pelo WebRTC, por ID de track. O retrato da sala e o
+    // ontrack podem chegar em qualquer ordem — a interface só desenha o que
+    // aparece nos dois.
+    const mediaTracks = new Map();
+    const audioEls = new Map(); // trackId -> <audio>
+    const videoEls = new Map(); // trackId -> <video>
+
+    let toastTimer = null;
+    function showToast(text) {
+      toastEl.textContent = text;
+      toastEl.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toastEl.hidden = true; }, 4000);
+    }
+
+    function send(event, data = '') {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ event, data }));
+      }
+    }
+
+    // ---- Entrar na sala ------------------------------------------------
     joinBtn.onclick = async () => {
       joinBtn.disabled = true;
       hintEl.textContent = 'Pedindo acesso ao microfone...';
@@ -335,18 +401,15 @@
         sampleRate:       48000,            // taxa nativa do Opus
       };
 
-      let stream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
       } catch (e) {
         hintEl.textContent = 'Não foi possível acessar o microfone: ' + e.message;
         hintEl.classList.add('error');
         joinBtn.disabled = false;
         return;
       }
-
-      localAudioTrack = stream.getAudioTracks()[0];
-      myStreamId = stream.id;
+      localAudioTrack = localStream.getAudioTracks()[0];
 
       // Busca a config de STUN/TURN no servidor (credenciais ficam lá, não aqui).
       let iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
@@ -359,161 +422,133 @@
 
       pc = new RTCPeerConnection(iceConfig);
 
-      // Envia nosso áudio para o servidor e aplica o bitrate desejado.
-      const audioSender = pc.addTrack(localAudioTrack, stream);
-      const audioParams = audioSender.getParameters();
-      if (!audioParams.encodings) audioParams.encodings = [{}];
-      audioParams.encodings[0].maxBitrate = CONFIG.bitrate;
-      audioSender.setParameters(audioParams).catch(err => console.warn('setParameters:', err));
+      // A ORDEM destes addTrack tem que casar com a ordem das m-lines que o
+      // servidor oferece (áudio-mic, áudio-tela, vídeo-tela, vídeo-câmera):
+      // é por essa correspondência que o servidor sabe se um vídeo que chegou
+      // é tela ou câmera.
+      micSender = pc.addTrack(localAudioTrack, localStream);
 
-      // Reserva desde já o "canal" de vídeo pro compartilhamento de tela,
-      // usando uma track de vídeo real (canvas em branco, sem gerar frames
-      // sozinha) em vez de uma transceiver vazia — isso garante que o
-      // navegador negocie esse m-line corretamente como apto a enviar,
-      // igual já acontece com o áudio. Quando alguém compartilhar a tela,
-      // basta trocar a track (replaceTrack) sem precisar renegociar de novo.
-      placeholderVideoTrack = document.createElement('canvas').captureStream(0).getVideoTracks()[0];
-      videoSender = pc.addTrack(placeholderVideoTrack, stream);
+      // Canal do áudio da tela. Reservado com uma track silenciosa só pra
+      // existir um msid válido no SDP; a track real entra por replaceTrack.
+      placeholderScreenAudio = criarTrackSilenciosa();
+      if (placeholderScreenAudio) {
+        screenAudioSender = pc.addTrack(placeholderScreenAudio, localStream);
+      }
 
-      // Mesma ideia pra câmera: canal de vídeo próprio, reservado desde já
-      // com uma track "vazia", pra poder ligar a câmera depois só com
-      // replaceTrack — e sem depender da tela compartilhada.
-      placeholderCameraTrack = document.createElement('canvas').captureStream(0).getVideoTracks()[0];
-      cameraSender = pc.addTrack(placeholderCameraTrack, stream);
+      // Canais de vídeo (tela e câmera). O canvas com captureStream(0) não
+      // gera quadro nenhum sozinho, então o canal fica negociado e pronto sem
+      // gastar banda até alguém realmente ligar a câmera/compartilhar a tela.
+      placeholderScreenVideo = criarTrackDeVideoVazia();
+      screenVideoSender = pc.addTrack(placeholderScreenVideo, localStream);
+      placeholderCamera = criarTrackDeVideoVazia();
+      cameraSender = pc.addTrack(placeholderCamera, localStream);
 
-      // Toca o áudio e mostra o vídeo (tela compartilhada e câmeras) que
-      // chegam dos outros participantes. O WebRTC só diz "isso é vídeo", não
-      // se é tela ou câmera — o servidor avisa isso à parte pelo evento
-      // 'track-kind' (guardado em trackKinds), que a essa altura já deve ter
-      // chegado (o servidor manda antes de renegociar a oferta que traz essa
-      // track pra cá).
-      //
-      // Os canais de tela/câmera de cada pessoa existem desde a conexão
-      // (reservados, "sendrecv") mesmo quando ninguém ligou nada ainda —
-      // então o navegador dispara ontrack "fantasma" pra eles logo ao
-      // conectar, sem conteúdo real nenhum. Só tratamos vídeo cujo tipo o
-      // servidor realmente confirmou; o resto a gente ignora.
       pc.ontrack = (event) => {
-        // Mic, tela e câmera da MESMA pessoa compartilham o mesmo MediaStream
-        // (é assim que a lista de participantes correlaciona a câmera com o
-        // dono certo — ver joinBtn.onclick). Só que isso significa que
-        // event.streams[0] chega aqui com VÁRIAS tracks de vídeo juntas: se
-        // um <video> recebesse esse stream inteiro, o navegador escolheria
-        // sozinho qual track tocar (podia sair câmera onde devia ser tela).
-        // Por isso montamos um MediaStream novo só com a track desta vez.
-        const streamId = event.streams[0] ? event.streams[0].id : event.track.id;
-        const soloStream = new MediaStream([event.track]);
-
-        if (event.track.kind === 'audio') {
-          const el = document.createElement('audio');
-          el.srcObject = soloStream;
-          el.autoplay = true;
-          audiosEl.appendChild(el);
-          event.track.onended = () => el.remove();
-          return;
-        }
-
-        const kind = trackKinds.get(event.track.id);
-        if (kind === 'cam') {
-          const el = document.createElement('video');
-          el.srcObject = soloStream;
-          el.autoplay = true;
-          el.playsInline = true;
-          el.muted = true;
-          remoteCameras.set(streamId, el);
-          renderCameraGrid();
-        } else if (kind === 'screen') {
-          const el = document.createElement('video');
-          el.srcObject = soloStream;
-          el.autoplay = true;
-          el.playsInline = true;
-          el.muted = true; // a tela compartilhada não tem áudio nesta versão
-          if (remoteScreenEl) remoteScreenEl.remove();
-          remoteScreenEl = el;
-          screensEl.appendChild(el);
-          event.track.onended = () => el.remove();
-        }
+        mediaTracks.set(event.track.id, event.track);
+        event.track.onended = () => {
+          mediaTracks.delete(event.track.id);
+          render();
+        };
+        render();
       };
 
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') leaveRoom();
+        if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) leaveRoom();
+      };
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) send('candidate', JSON.stringify(e.candidate));
       };
 
       ws = new WebSocket(
         (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'
       );
 
-      // O servidor pode mandar várias ofertas em sequência rápida (ex.:
-      // quando alguém sai, o resync dispara mais de uma renegociação em
-      // poucos milissegundos). Processar duas ofertas ao mesmo tempo deixa
-      // a negociação (setRemoteDescription/setLocalDescription) num estado
-      // inconsistente, então encadeamos tudo numa fila e processamos uma
-      // por vez, na ordem em que chegaram.
-      let negotiationChain = Promise.resolve();
-
-      // Manda candidatos ICE para o servidor.
-      pc.onicecandidate = (e) => {
-        if (e.candidate) {
-          ws.send(JSON.stringify({ event: 'candidate', data: JSON.stringify(e.candidate) }));
-        }
+      // O servidor pode mandar ofertas e candidatos em sequência rápida (várias
+      // pessoas entrando, ligando câmera e compartilhando tela ao mesmo tempo).
+      // Processar duas ofertas em paralelo — ou um candidato antes da oferta a
+      // que ele pertence — deixa a negociação num estado inconsistente, então
+      // TUDO passa por uma fila e é aplicado na ordem em que chegou.
+      let chain = Promise.resolve();
+      const enqueue = (fn) => {
+        chain = chain.then(fn).catch(err => console.error('Erro na sinalização:', err));
       };
 
       ws.onopen = () => {
         joinWrapEl.hidden = true;
         voiceBarEl.hidden = false;
-        shareBtn.disabled = false;
         cameraBtn.disabled = false;
-        renderParticipants();
+        render();
       };
       ws.onclose = () => leaveRoom();
+      ws.onerror = () => showToast('Conexão com o servidor caiu.');
 
       // O servidor é quem faz a oferta (padrão do SFU); nós respondemos.
-      ws.onmessage = async (msg) => {
-        const m = JSON.parse(msg.data);
+      ws.onmessage = (msg) => {
+        let m;
+        try {
+          m = JSON.parse(msg.data);
+        } catch (e) {
+          console.warn('mensagem inválida do servidor:', e);
+          return;
+        }
         if (!m) return;
 
-        if (m.event === 'offer') {
-          negotiationChain = negotiationChain.then(async () => {
-            const offer = JSON.parse(m.data);
-            await pc.setRemoteDescription(offer);
-            const answer = await pc.createAnswer();
-            answer.sdp = ajustarOpus(answer.sdp);   // liga FEC, bitrate e estéreo no Opus
-            await pc.setLocalDescription(answer);
-            ws.send(JSON.stringify({ event: 'answer', data: JSON.stringify(answer) }));
-          }).catch(err => console.error('Erro processando oferta:', err));
-          await negotiationChain;
-        } else if (m.event === 'candidate') {
-          const candidate = JSON.parse(m.data);
-          await pc.addIceCandidate(candidate);
-        } else if (m.event === 'roster') {
-          // O servidor manda o total de gente na sala (nos contando); a
-          // lista de participantes sempre reflete esse número.
-          otherCount = Math.max(0, parseInt(m.data, 10) - 1);
-          renderParticipants();
-        } else if (m.event === 'screenshare-start') {
-          // Alguém (talvez eu mesmo) começou a compartilhar: só sobra livre
-          // pra ninguém mais até essa pessoa parar.
-          if (!sharingScreen) shareBtn.disabled = true;
-        } else if (m.event === 'screenshare-stop') {
-          if (!sharingScreen) shareBtn.disabled = false;
-          if (remoteScreenEl) {
-            remoteScreenEl.remove();
-            remoteScreenEl = null;
-          }
-        } else if (m.event === 'screenshare-rejected') {
-          alert('Alguém já está compartilhando a tela. Tente de novo quando essa pessoa parar.');
-        } else if (m.event === 'camera-stop') {
-          if (m.data !== myStreamId) {
-            remoteCameras.delete(m.data);
-            renderCameraGrid();
-          }
-        } else if (m.event === 'track-kind') {
-          const sep = m.data.indexOf(':');
-          trackKinds.set(m.data.slice(sep + 1), m.data.slice(0, sep));
+        switch (m.event) {
+          case 'welcome':
+            myPeerId = m.data;
+            render();
+            break;
+
+          case 'state':
+            room = JSON.parse(m.data);
+            if (!Array.isArray(room.peers)) room.peers = [];
+            if (!Array.isArray(room.tracks)) room.tracks = [];
+            render();
+            break;
+
+          case 'offer':
+            enqueue(async () => {
+              if (!pc) return;
+              await pc.setRemoteDescription(JSON.parse(m.data));
+              const answer = await pc.createAnswer();
+              answer.sdp = ajustarOpus(answer.sdp); // liga FEC, bitrate e estéreo no Opus
+              await pc.setLocalDescription(answer);
+              send('answer', JSON.stringify(pc.localDescription));
+              // Só depois da negociação o navegador aceita mexer nos
+              // parâmetros de envio; aplicar antes disso era silenciosamente
+              // ignorado e o teto de bitrate nunca valia.
+              aplicarBitrates();
+            });
+            break;
+
+          case 'candidate':
+            enqueue(async () => {
+              if (!pc) return;
+              await pc.addIceCandidate(JSON.parse(m.data));
+            });
+            break;
+
+          case 'screenshare-granted':
+            if (awaitingShareGrant) {
+              awaitingShareGrant = false;
+              startSharing();
+            }
+            break;
+
+          case 'screenshare-rejected':
+            awaitingShareGrant = false;
+            showToast('Alguém já está compartilhando a tela. Tente de novo quando essa pessoa parar.');
+            render();
+            break;
+
+          default:
+            console.warn('evento desconhecido do servidor:', m.event);
         }
       };
     };
 
+    // ---- Microfone -----------------------------------------------------
     muteBtn.onclick = () => {
       if (!localAudioTrack) return;
       micEnabled = !micEnabled;
@@ -521,52 +556,121 @@
       muteBtn.classList.toggle('muted-btn', !micEnabled);
       muteBtn.title = micEnabled ? 'Mutar microfone' : 'Desmutar microfone';
       muteBtn.querySelector('.slash').style.display = micEnabled ? 'none' : 'block';
-      renderParticipants();
+      send('mic-state', micEnabled ? 'live' : 'muted');
+      render();
     };
 
+    // ---- Compartilhamento de tela --------------------------------------
+    // Pedimos permissão ao servidor ANTES de capturar a tela. Assim, se outra
+    // pessoa chegou primeiro, nada é capturado nem transmitido — antes o
+    // navegador já estava enviando a tela quando descobria que fora recusado,
+    // e dois compartilhamentos acabavam no ar ao mesmo tempo.
     shareBtn.onclick = async () => {
       if (sharingScreen) {
         await stopSharing();
         return;
       }
+      if (awaitingShareGrant) return;
+      awaitingShareGrant = true;
+      shareBtn.disabled = true;
+      send('screenshare-request');
+    };
 
+    // Pede a tela com áudio. Alguns navegadores (Firefox, por exemplo) recusam
+    // o pedido inteiro quando o áudio vem junto — nesse caso tentamos de novo
+    // só com a imagem, em vez de o compartilhamento simplesmente falhar.
+    async function capturarTela() {
+      const video = {
+        width: { max: CONFIG.videoMaxWidth },
+        height: { max: CONFIG.videoMaxHeight },
+        frameRate: { max: CONFIG.videoMaxFps },
+      };
+      try {
+        return await navigator.mediaDevices.getDisplayMedia({ video, audio: true });
+      } catch (e) {
+        if (e && (e.name === 'NotAllowedError' || e.name === 'AbortError')) throw e;
+        console.warn('sem áudio da tela neste navegador:', e);
+        return await navigator.mediaDevices.getDisplayMedia({ video });
+      }
+    }
+
+    async function startSharing() {
       let stream;
       try {
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            width: { max: CONFIG.videoMaxWidth },
-            height: { max: CONFIG.videoMaxHeight },
-            frameRate: { max: CONFIG.videoMaxFps },
-          },
-          audio: false,
-        });
+        stream = await capturarTela();
       } catch (e) {
-        return; // usuário cancelou o seletor de tela/janela
+        // Usuário cancelou o seletor: devolve a vez pra sala.
+        send('screenshare-stop');
+        render();
+        return;
       }
 
-      screenTrack = stream.getVideoTracks()[0];
-      await videoSender.replaceTrack(screenTrack);
+      screenVideoTrack = stream.getVideoTracks()[0];
+      screenAudioTrack = stream.getAudioTracks()[0] || null;
 
-      const params = videoSender.getParameters();
-      if (!params.encodings) params.encodings = [{}];
-      params.encodings[0].maxBitrate = CONFIG.videoBitrate;
-      videoSender.setParameters(params).catch(err => console.warn('setParameters (vídeo):', err));
+      try {
+        await screenVideoSender.replaceTrack(screenVideoTrack);
+        setMaxBitrate(screenVideoSender, CONFIG.videoBitrate);
+
+        if (screenAudioTrack && screenAudioSender) {
+          await screenAudioSender.replaceTrack(screenAudioTrack);
+          setMaxBitrate(screenAudioSender, CONFIG.screenAudioBitrate);
+        }
+      } catch (e) {
+        console.error('Não consegui começar a compartilhar:', e);
+        showToast('Não consegui iniciar o compartilhamento de tela.');
+        stream.getTracks().forEach(t => t.stop());
+        screenVideoTrack = null;
+        screenAudioTrack = null;
+        send('screenshare-stop');
+        render();
+        return;
+      }
 
       // Se a pessoa parar pelo controle nativo do navegador ("Parar de
       // compartilhar" na barra do Chrome/Edge), avisamos a sala também.
-      screenTrack.onended = () => stopSharing();
+      screenVideoTrack.onended = () => { stopSharing(); };
 
       sharingScreen = true;
-      shareBtn.classList.add('active');
-      shareBtn.title = 'Parar compartilhamento';
-      ws.send(JSON.stringify({ event: 'screenshare-start', data: '' }));
-    };
+      render();
+    }
 
+    async function stopSharing() {
+      if (!sharingScreen && !screenVideoTrack) {
+        awaitingShareGrant = false;
+        send('screenshare-stop');
+        render();
+        return;
+      }
+      sharingScreen = false;
+      awaitingShareGrant = false;
+
+      if (screenVideoTrack) screenVideoTrack.onended = null;
+
+      try {
+        await screenVideoSender.replaceTrack(placeholderScreenVideo);
+        if (screenAudioSender) {
+          await screenAudioSender.replaceTrack(placeholderScreenAudio);
+          setMaxBitrate(screenAudioSender, CONFIG.screenAudioIdleBitrate);
+        }
+      } catch (e) {
+        console.warn('parando compartilhamento:', e);
+      }
+
+      if (screenVideoTrack) { screenVideoTrack.stop(); screenVideoTrack = null; }
+      if (screenAudioTrack) { screenAudioTrack.stop(); screenAudioTrack = null; }
+
+      send('screenshare-stop');
+      render();
+    }
+
+    // ---- Câmera --------------------------------------------------------
     cameraBtn.onclick = async () => {
       if (cameraOn) {
         await stopCamera();
         return;
       }
+      cameraBtn.disabled = true;
 
       let camStream;
       try {
@@ -579,157 +683,371 @@
           audio: false,
         });
       } catch (e) {
-        return; // sem câmera ou permissão negada
+        cameraBtn.disabled = false;
+        if (e && e.name !== 'NotAllowedError' && e.name !== 'AbortError') {
+          showToast('Não consegui ligar a câmera: ' + (e.message || e.name));
+        }
+        return;
       }
 
       cameraTrack = camStream.getVideoTracks()[0];
-      await cameraSender.replaceTrack(cameraTrack);
-
-      const params = cameraSender.getParameters();
-      if (!params.encodings) params.encodings = [{}];
-      params.encodings[0].maxBitrate = CONFIG.cameraBitrate;
-      cameraSender.setParameters(params).catch(err => console.warn('setParameters (câmera):', err));
+      try {
+        await cameraSender.replaceTrack(cameraTrack);
+        setMaxBitrate(cameraSender, CONFIG.cameraBitrate);
+      } catch (e) {
+        console.error('replaceTrack (câmera):', e);
+        showToast('Não consegui ligar a câmera.');
+        camStream.getTracks().forEach(t => t.stop());
+        cameraTrack = null;
+        cameraBtn.disabled = false;
+        return;
+      }
 
       // Se o dispositivo for desconectado no meio do caminho.
-      cameraTrack.onended = () => stopCamera();
+      cameraTrack.onended = () => { stopCamera(); };
 
-      localCameraPreviewEl = document.createElement('video');
-      localCameraPreviewEl.srcObject = camStream;
-      localCameraPreviewEl.autoplay = true;
-      localCameraPreviewEl.playsInline = true;
-      localCameraPreviewEl.muted = true;
-      localCameraPreviewEl.className = 'mirror';
-
+      localCameraStream = camStream;
       cameraOn = true;
-      cameraBtn.classList.add('active');
-      cameraBtn.title = 'Desligar câmera';
-      renderCameraGrid();
+      cameraBtn.disabled = false;
+      send('camera-state', 'on');
+      render();
     };
 
     async function stopCamera() {
       if (!cameraOn) return;
       cameraOn = false;
-      cameraBtn.classList.remove('active');
-      cameraBtn.title = 'Ligar câmera';
 
-      await cameraSender.replaceTrack(placeholderCameraTrack);
-      if (cameraTrack) {
-        cameraTrack.stop();
-        cameraTrack = null;
+      if (cameraTrack) cameraTrack.onended = null;
+      try {
+        await cameraSender.replaceTrack(placeholderCamera);
+      } catch (e) {
+        console.warn('desligando câmera:', e);
       }
-      localCameraPreviewEl = null;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ event: 'camera-stop', data: myStreamId }));
-      }
-      renderCameraGrid();
+      if (cameraTrack) { cameraTrack.stop(); cameraTrack = null; }
+      localCameraStream = null;
+
+      send('camera-state', 'off');
+      render();
     }
 
-    async function stopSharing() {
-      if (!sharingScreen) return;
-      sharingScreen = false;
-      shareBtn.classList.remove('active');
-      shareBtn.title = 'Compartilhar tela';
-
-      await videoSender.replaceTrack(placeholderVideoTrack);
-      if (screenTrack) {
-        screenTrack.stop();
-        screenTrack = null;
-      }
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ event: 'screenshare-stop', data: '' }));
-      }
-    }
-
+    // ---- Sair ----------------------------------------------------------
     leaveBtn.onclick = () => leaveRoom();
 
     function leaveRoom() {
-      if (sharingScreen) stopSharing();
-      if (cameraOn) stopCamera();
-      if (ws) { ws.onclose = null; ws.close(); ws = null; }
-      if (pc) { pc.close(); pc = null; }
-      if (localAudioTrack) { localAudioTrack.stop(); localAudioTrack = null; }
-      if (placeholderVideoTrack) { placeholderVideoTrack.stop(); placeholderVideoTrack = null; }
-      if (placeholderCameraTrack) { placeholderCameraTrack.stop(); placeholderCameraTrack = null; }
+      // Fecha primeiro a sinalização pra não disparar leaveRoom de novo pelo
+      // onclose/onconnectionstatechange.
+      if (ws) { ws.onclose = null; ws.onerror = null; ws.onmessage = null; ws.close(); ws = null; }
+      if (pc) { pc.onconnectionstatechange = null; pc.ontrack = null; pc.close(); pc = null; }
+
+      for (const t of [localAudioTrack, screenVideoTrack, screenAudioTrack, cameraTrack,
+                       placeholderScreenAudio, placeholderScreenVideo, placeholderCamera]) {
+        if (t) t.stop();
+      }
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      if (localCameraStream) localCameraStream.getTracks().forEach(t => t.stop());
+      if (silentAudioCtx) { silentAudioCtx.close().catch(() => {}); silentAudioCtx = null; }
+
+      localStream = localAudioTrack = null;
+      screenVideoTrack = screenAudioTrack = cameraTrack = null;
+      placeholderScreenAudio = placeholderScreenVideo = placeholderCamera = null;
+      micSender = screenAudioSender = screenVideoSender = cameraSender = null;
+      localCameraStream = null;
+      myPeerId = null;
+
+      for (const el of audioEls.values()) { el.srcObject = null; el.remove(); }
+      for (const el of videoEls.values()) { el.srcObject = null; el.remove(); }
+      audioEls.clear();
+      videoEls.clear();
+      mediaTracks.clear();
+      room = { peers: [], tracks: [], screenSharer: '' };
+      ultimaGradeCameras = '';
+      telaAtual = '';
 
       audiosEl.innerHTML = '';
       screensEl.innerHTML = '';
-      remoteScreenEl = null;
-      remoteCameras.clear();
       cameraGridEl.innerHTML = '';
       participantsEl.innerHTML = '';
+
       micEnabled = true;
+      cameraOn = false;
       sharingScreen = false;
-      otherCount = 0;
+      awaitingShareGrant = false;
+      muteBtn.classList.remove('muted-btn');
+      muteBtn.title = 'Mutar microfone';
+      muteBtn.querySelector('.slash').style.display = 'none';
+      cameraBtn.classList.remove('active');
+      cameraBtn.title = 'Ligar câmera';
+      shareBtn.classList.remove('active');
+      shareBtn.title = 'Compartilhar tela';
 
       voiceBarEl.hidden = true;
       joinWrapEl.hidden = false;
       joinBtn.disabled = false;
       cameraBtn.disabled = true;
+      shareBtn.disabled = true;
       hintEl.textContent = 'Abra esta mesma página em outra aba ou dispositivo pra testar.';
       hintEl.classList.remove('error');
+    }
+
+    window.addEventListener('pagehide', () => { if (ws) leaveRoom(); });
+
+    // ---- Helpers de mídia ----------------------------------------------
+    function setMaxBitrate(sender, bitrate) {
+      if (!sender) return;
+      const params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+      params.encodings[0].maxBitrate = bitrate;
+      sender.setParameters(params).catch(err => console.warn('setParameters:', err));
+    }
+
+    // Reaplica os tetos de bitrate de todos os canais de acordo com o que
+    // cada um está transmitindo agora.
+    function aplicarBitrates() {
+      // Os canais de vídeo ociosos não gastam nada (o canvas placeholder não
+      // gera quadro), então o teto pode ficar sempre no valor final. Já o
+      // canal de áudio da tela transmite silêncio enquanto está reservado —
+      // esse sim fica num teto mínimo até virar áudio de verdade.
+      setMaxBitrate(micSender, CONFIG.bitrate);
+      setMaxBitrate(screenVideoSender, CONFIG.videoBitrate);
+      setMaxBitrate(cameraSender, CONFIG.cameraBitrate);
+      setMaxBitrate(screenAudioSender,
+        screenAudioTrack ? CONFIG.screenAudioBitrate : CONFIG.screenAudioIdleBitrate);
+    }
+
+    // Track de vídeo que existe mas não gera quadro nenhum: só serve pra
+    // reservar (e negociar) o canal de vídeo desde o começo.
+    function criarTrackDeVideoVazia() {
+      return document.createElement('canvas').captureStream(0).getVideoTracks()[0];
+    }
+
+    // Track de áudio silenciosa, mesma ideia. Se o navegador não tiver
+    // AudioContext, devolvemos null e o compartilhamento segue sem áudio.
+    function criarTrackSilenciosa() {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return null;
+      try {
+        silentAudioCtx = new AudioCtx();
+        const track = silentAudioCtx.createMediaStreamDestination().stream.getAudioTracks()[0];
+        if (track) track.enabled = false;
+        return track || null;
+      } catch (e) {
+        console.warn('sem áudio de tela:', e);
+        return null;
+      }
     }
 
     // Ajusta os parâmetros do codec Opus diretamente no SDP:
     // - useinbandfec=1  -> correção de erros (aguenta melhor perda de pacotes)
     // - maxaveragebitrate -> teto de bitrate
     // - stereo / maxplaybackrate -> qualidade máxima (modo música)
+    //
+    // Com várias pessoas na sala o SDP tem VÁRIAS m-lines de áudio (uma por
+    // participante); a versão anterior só ajustava a primeira.
     function ajustarOpus(sdp) {
-      // Descobre o número de payload do Opus.
-      const m = sdp.match(/a=rtpmap:(\d+) opus\/48000/i);
-      if (!m) return sdp;
-      const pt = m[1];
+      if (!sdp) return sdp;
+      const eol = sdp.includes('\r\n') ? '\r\n' : '\n';
+      const lines = sdp.split(/\r?\n/);
+
+      const opusPts = new Set();
+      for (const line of lines) {
+        const m = line.match(/^a=rtpmap:(\d+) opus\/48000/i);
+        if (m) opusPts.add(m[1]);
+      }
+      if (opusPts.size === 0) return sdp;
 
       let extras = `useinbandfec=1;maxaveragebitrate=${CONFIG.bitrate}`;
-      if (CONFIG.musica) {
-        extras += ';stereo=1;sprop-stereo=1;maxplaybackrate=48000';
-      }
+      if (CONFIG.musica) extras += ';stereo=1;sprop-stereo=1;maxplaybackrate=48000';
 
-      const fmtpRegex = new RegExp(`(a=fmtp:${pt} )(.*)`);
-      if (fmtpRegex.test(sdp)) {
-        // Já existe uma linha fmtp: acrescenta os parâmetros.
-        return sdp.replace(fmtpRegex, `$1$2;${extras}`);
+      // 1ª passada: acrescenta os parâmetros nas linhas fmtp que já existem.
+      const comFmtp = new Set();
+      const parcial = lines.map(line => {
+        const m = line.match(/^a=fmtp:(\d+) (.*)$/);
+        if (m && opusPts.has(m[1])) {
+          comFmtp.add(m[1]);
+          return `a=fmtp:${m[1]} ${m[2]};${extras}`;
+        }
+        return line;
+      });
+
+      // 2ª passada: cria a linha fmtp pros payload types que não tinham uma.
+      const out = [];
+      for (const line of parcial) {
+        out.push(line);
+        const m = line.match(/^a=rtpmap:(\d+) opus\/48000/i);
+        if (m && opusPts.has(m[1]) && !comFmtp.has(m[1])) {
+          out.push(`a=fmtp:${m[1]} ${extras}`);
+        }
       }
-      // Não existe: cria uma logo após o rtpmap do Opus.
-      return sdp.replace(
-        new RegExp(`(a=rtpmap:${pt} opus\\/48000\\/2\\r?\\n)`, 'i'),
-        `$1a=fmtp:${pt} ${extras}\r\n`
-      );
+      return out.join(eol);
+    }
+
+    // ---- Interface ------------------------------------------------------
+    // Tudo é desenhado a partir do retrato da sala (room) cruzado com a mídia
+    // que já chegou (mediaTracks). Como as duas coisas podem chegar em
+    // qualquer ordem, render() é chamado nos dois casos e sempre converge.
+    function render() {
+      renderParticipants();
+      syncAudio();
+      renderCameras();
+      renderScreen();
+      renderControls();
+    }
+
+    function outrosParticipantes() {
+      return room.peers.filter(p => p.peerId !== myPeerId);
+    }
+
+    function rotulo(peerId) {
+      const outros = outrosParticipantes();
+      const i = outros.findIndex(p => p.peerId === peerId);
+      return i < 0 ? 'Participante' : `Participante ${i + 1}`;
+    }
+
+    function trackDe(peerId, kind) {
+      const info = room.tracks.find(t => t.peerId === peerId && t.kind === kind);
+      if (!info) return null;
+      return mediaTracks.has(info.id) ? info.id : null;
     }
 
     function renderParticipants() {
       participantsEl.innerHTML = '';
-      participantsEl.appendChild(participantRow('Você', 'V', !micEnabled));
-      for (let i = 1; i <= otherCount; i++) {
-        participantsEl.appendChild(participantRow(`Participante ${i}`, 'P', false));
+      if (!ws) return;
+
+      participantsEl.appendChild(participantRow('Você', 'V', {
+        muted: !micEnabled,
+        cameraOn,
+        sharing: !!myPeerId && room.screenSharer === myPeerId,
+      }));
+
+      for (const p of outrosParticipantes()) {
+        participantsEl.appendChild(participantRow(rotulo(p.peerId), 'P', {
+          muted: p.muted,
+          cameraOn: p.cameraOn,
+          sharing: room.screenSharer === p.peerId,
+        }));
       }
     }
 
-    function participantRow(name, initial, muted) {
+    function participantRow(name, initial, flags) {
       const li = document.createElement('li');
       li.className = 'participant' + (initial === 'V' ? ' self' : '');
-      li.innerHTML = `
-        <span class="avatar">${initial}</span>
-        <span class="pname">${name}</span>
-        <span class="mic-state${muted ? ' muted' : ''}">${muted ? ICON_MIC_MUTED_SMALL : ICON_MIC_SMALL}</span>
-      `;
+
+      const avatar = document.createElement('span');
+      avatar.className = 'avatar';
+      avatar.textContent = initial;
+
+      const pname = document.createElement('span');
+      pname.className = 'pname';
+      pname.textContent = name; // textContent: nada aqui vira HTML
+
+      const badges = document.createElement('span');
+      badges.className = 'badges';
+      if (flags.sharing) badges.appendChild(badge(ICON_SCREEN, 'on', 'Compartilhando a tela'));
+      if (flags.cameraOn) badges.appendChild(badge(ICON_CAM, 'on', 'Câmera ligada'));
+      badges.appendChild(badge(flags.muted ? ICON_MIC_MUTED : ICON_MIC,
+        flags.muted ? 'muted' : '', flags.muted ? 'Microfone mutado' : 'Microfone ligado'));
+
+      li.append(avatar, pname, badges);
       return li;
     }
 
-    // Grade de câmeras: um quadrado por pessoa com a câmera ligada, incluindo
-    // a sua própria (sempre a primeira). Construído via DOM (não innerHTML)
-    // porque precisamos "mover" os elementos <video> de verdade pra dentro
-    // dos quadrados — um template string recriaria o vídeo do zero e
-    // perderia o stream.
-    function renderCameraGrid() {
+    function badge(svg, extraClass, title) {
+      const el = document.createElement('span');
+      el.className = 'badge' + (extraClass ? ' ' + extraClass : '');
+      el.title = title;
+      el.innerHTML = svg; // constantes nossas, não vêm do servidor
+      return el;
+    }
+
+    // Cria (ou reaproveita) o <video> de uma track. Reaproveitar importa: se a
+    // gente recriasse o elemento a cada render, o vídeo piscava a cada mudança
+    // na sala.
+    function videoDe(trackId, mirror) {
+      let el = videoEls.get(trackId);
+      if (!el) {
+        const media = mediaTracks.get(trackId);
+        if (!media) return null;
+        el = document.createElement('video');
+        el.srcObject = new MediaStream([media]);
+        el.autoplay = true;
+        el.playsInline = true;
+        el.muted = true; // o áudio vem pelos <audio>, não pelo <video>
+        videoEls.set(trackId, el);
+        el.play().catch(() => {});
+      }
+      el.classList.toggle('mirror', !!mirror);
+      return el;
+    }
+
+    // Toca o microfone de todo mundo, e o áudio da tela de quem estiver
+    // compartilhando. Reconcilia: cria o que falta, remove o que saiu.
+    function syncAudio() {
+      const querido = new Map();
+      for (const t of room.tracks) {
+        if (t.peerId === myPeerId) continue;
+        const isMic = t.kind === 'mic';
+        const isScreenAudio = t.kind === 'screen-audio' && room.screenSharer === t.peerId;
+        if (!isMic && !isScreenAudio) continue;
+        const media = mediaTracks.get(t.id);
+        if (media) querido.set(t.id, media);
+      }
+
+      for (const [id, el] of [...audioEls]) {
+        if (!querido.has(id)) {
+          el.srcObject = null;
+          el.remove();
+          audioEls.delete(id);
+        }
+      }
+      for (const [id, media] of querido) {
+        if (audioEls.has(id)) continue;
+        const el = document.createElement('audio');
+        el.srcObject = new MediaStream([media]);
+        el.autoplay = true;
+        audiosEl.appendChild(el);
+        el.play().catch(() => {});
+        audioEls.set(id, el);
+      }
+    }
+
+    let ultimaGradeCameras = '';
+    function renderCameras() {
+      const itens = [];
+      if (cameraOn && localCameraStream) itens.push({ key: 'local', label: 'Você' });
+      for (const p of outrosParticipantes()) {
+        if (!p.cameraOn) continue;
+        const trackId = trackDe(p.peerId, 'cam');
+        if (!trackId) continue; // ainda não chegou a mídia dessa câmera
+        itens.push({ key: trackId, label: rotulo(p.peerId) });
+      }
+
+      const assinatura = itens.map(i => i.key + '=' + i.label).join('|');
+      if (assinatura === ultimaGradeCameras) return;
+      ultimaGradeCameras = assinatura;
+
       cameraGridEl.innerHTML = '';
-      if (cameraOn && localCameraPreviewEl) {
-        cameraGridEl.appendChild(cameraTile(localCameraPreviewEl, 'Você'));
+      for (const item of itens) {
+        let el;
+        if (item.key === 'local') {
+          el = videoEls.get('local');
+          if (!el) {
+            el = document.createElement('video');
+            el.autoplay = true;
+            el.playsInline = true;
+            el.muted = true;
+            videoEls.set('local', el);
+          }
+          if (el.srcObject !== localCameraStream) {
+            el.srcObject = localCameraStream;
+            el.play().catch(() => {});
+          }
+          el.classList.add('mirror');
+        } else {
+          el = videoDe(item.key, false);
+        }
+        if (el) cameraGridEl.appendChild(cameraTile(el, item.label));
       }
-      let i = 1;
-      for (const el of remoteCameras.values()) {
-        cameraGridEl.appendChild(cameraTile(el, `Participante ${i}`));
-        i++;
-      }
+      podarVideos();
     }
 
     function cameraTile(videoEl, label) {
@@ -741,6 +1059,61 @@
       labelEl.textContent = label;
       tile.appendChild(labelEl);
       return tile;
+    }
+
+    let telaAtual = '';
+    function renderScreen() {
+      // Só mostramos a tela de OUTRA pessoa — ver a própria tela dentro da
+      // própria tela vira aquele efeito de espelho infinito.
+      let trackId = '';
+      if (room.screenSharer && room.screenSharer !== myPeerId) {
+        trackId = trackDe(room.screenSharer, 'screen') || '';
+      }
+      if (trackId === telaAtual) return;
+      telaAtual = trackId;
+
+      screensEl.innerHTML = '';
+      if (trackId) {
+        const el = videoDe(trackId, false);
+        if (el) screensEl.appendChild(el);
+      }
+      podarVideos();
+    }
+
+    // Solta os <video> de tracks que não existem mais na sala (a pessoa saiu,
+    // ou parou de publicar aquela mídia).
+    function podarVideos() {
+      const vivas = new Set(room.tracks.map(t => t.id));
+      for (const [id, el] of [...videoEls]) {
+        if (id === 'local') continue;
+        if (vivas.has(id) && mediaTracks.has(id)) continue;
+        el.srcObject = null;
+        el.remove();
+        videoEls.delete(id);
+      }
+    }
+
+    function renderControls() {
+      if (!ws) return;
+      const outroCompartilhando = !!room.screenSharer && room.screenSharer !== myPeerId;
+
+      shareBtn.disabled = awaitingShareGrant || outroCompartilhando;
+      shareBtn.classList.toggle('active', sharingScreen);
+      shareBtn.title = sharingScreen ? 'Parar compartilhamento'
+        : outroCompartilhando ? 'Outra pessoa está compartilhando' : 'Compartilhar tela';
+
+      cameraBtn.classList.toggle('active', cameraOn);
+      cameraBtn.title = cameraOn ? 'Desligar câmera' : 'Ligar câmera';
+
+      if (sharingScreen) {
+        voiceDetailEl.textContent = screenAudioTrack
+          ? 'Você está compartilhando a tela (com áudio)'
+          : 'Você está compartilhando a tela';
+      } else if (outroCompartilhando) {
+        voiceDetailEl.textContent = rotulo(room.screenSharer) + ' está compartilhando a tela';
+      } else {
+        voiceDetailEl.textContent = 'Sala de Voz';
+      }
     }
   </script>
 </body>
