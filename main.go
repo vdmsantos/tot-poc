@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -53,9 +55,61 @@ type websocketMessage struct {
 func main() {
 	http.Handle("/", http.FileServer(http.Dir("./web")))
 	http.HandleFunc("/ws", websocketHandler)
+	http.HandleFunc("/config", configHandler) // entrega STUN/TURN para o navegador
 
-	log.Println("Sala de voz rodando em http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// O Render (e outros hosts) definem a porta via variável de ambiente PORT.
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Printf("Sala de voz rodando na porta %s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+
+// iceServers monta a lista de servidores STUN/TURN a partir de variáveis de
+// ambiente. STUN sempre entra; o TURN (relay) é opcional, mas é o que faz o
+// áudio funcionar em hosts que só expõem HTTP, como o Render.
+//
+//	TURN_URL  = turn:host:porta  (pode ter vários separados por vírgula)
+//	TURN_USER = usuário do TURN
+//	TURN_PASS = senha do TURN
+func iceServers() []webrtc.ICEServer {
+	servers := []webrtc.ICEServer{
+		{URLs: []string{"stun:stun.l.google.com:19302"}},
+	}
+	if turnURL := os.Getenv("TURN_URL"); turnURL != "" {
+		servers = append(servers, webrtc.ICEServer{
+			URLs:       strings.Split(turnURL, ","),
+			Username:   os.Getenv("TURN_USER"),
+			Credential: os.Getenv("TURN_PASS"),
+		})
+	}
+	return servers
+}
+
+// configHandler entrega ao navegador a mesma lista de STUN/TURN, para que as
+// credenciais fiquem só no servidor (variáveis de ambiente) e não no HTML.
+func configHandler(w http.ResponseWriter, r *http.Request) {
+	type iceServer struct {
+		URLs       []string `json:"urls"`
+		Username   string   `json:"username,omitempty"`
+		Credential string   `json:"credential,omitempty"`
+	}
+	out := struct {
+		ICEServers []iceServer `json:"iceServers"`
+	}{
+		ICEServers: []iceServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
+	}
+	if turnURL := os.Getenv("TURN_URL"); turnURL != "" {
+		out.ICEServers = append(out.ICEServers, iceServer{
+			URLs:       strings.Split(turnURL, ","),
+			Username:   os.Getenv("TURN_USER"),
+			Credential: os.Getenv("TURN_PASS"),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // addTrack registra o áudio recebido de um participante para poder redistribuí-lo.
@@ -180,9 +234,7 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	defer c.Close()
 
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:19302"}},
-		},
+		ICEServers: iceServers(),
 	})
 	if err != nil {
 		log.Print(err)

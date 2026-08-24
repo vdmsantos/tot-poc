@@ -50,12 +50,50 @@ Sala de voz rodando em http://localhost:8080
 - A **sinalização** (troca de ofertas/respostas e candidatos de rede) acontece
   por **WebSocket** (`/ws`).
 
+## Deploy no Render (grátis)
+
+O projeto já vem com um `Dockerfile` pronto. O Render dá HTTPS automático
+(necessário para o microfone funcionar fora do localhost).
+
+### 1. Suba o código para o GitHub
+
+Crie um repositório e faça push do projeto.
+
+### 2. Crie um TURN grátis (necessário no Render)
+
+O Render só expõe **uma porta HTTP**, então o áudio do WebRTC precisa passar
+por um servidor **TURN** (relay). Um grátis:
+
+1. Crie uma conta em https://dashboard.metered.ca/signup?tool=turnserver
+2. Pegue as credenciais de TURN (URL, usuário e senha). O plano grátis dá
+   ~50 GB/mês, mais que suficiente para testes.
+
+### 3. Crie o Web Service no Render
+
+1. Em https://dashboard.render.com → **New** → **Web Service**.
+2. Conecte o repositório do GitHub.
+3. O Render detecta o `Dockerfile` automaticamente (Runtime: Docker).
+4. Em **Environment**, adicione as variáveis (com os dados do Metered):
+
+   | Variável   | Valor                                             |
+   |------------|---------------------------------------------------|
+   | `TURN_URL` | `turn:SEU_HOST:80,turn:SEU_HOST:443?transport=tcp`|
+   | `TURN_USER`| seu usuário do TURN                               |
+   | `TURN_PASS`| sua senha do TURN                                 |
+
+   (Não precisa definir `PORT` — o Render injeta sozinho.)
+5. Clique em **Create Web Service** e aguarde o build.
+
+Ao final você recebe uma URL tipo `https://seu-app.onrender.com`. Abra em dois
+dispositivos e teste. 🎧
+
+> **Atenção:** no plano grátis o serviço "dorme" após ~15 min sem uso; o
+> primeiro acesso depois disso demora ~1 minuto para acordar. É normal.
+
 ## Próximos passos possíveis
 
 - **Salas separadas**: hoje todo mundo cai na mesma sala. Dá para adicionar um
   `?sala=xyz` e agrupar os participantes por ID de sala.
 - **Mutar / indicador de quem está falando**.
-- **TURN**: para funcionar fora da mesma rede (internet, atrás de NAT/firewall
-  mais fechado), você precisa de um servidor TURN (ex.: coturn).
-- **HTTPS**: navegadores exigem HTTPS para acessar o microfone fora de
-  `localhost`. Rode atrás de um proxy com TLS ou use certificado local.
+- **TURN próprio**: para produção, vale rodar seu próprio servidor TURN
+  (ex.: coturn) em vez de depender de um serviço grátis.

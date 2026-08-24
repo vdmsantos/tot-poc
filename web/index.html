@@ -1,211 +1,185 @@
 <!doctype html>
 <html lang="pt-br">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Sala de Voz</title>
-    <style>
-      :root {
-        color-scheme: light dark;
-      }
-      body {
-        font-family: system-ui, sans-serif;
-        max-width: 520px;
-        margin: 40px auto;
-        padding: 0 20px;
-        line-height: 1.5;
-      }
-      h1 {
-        font-size: 1.4rem;
-      }
-      button {
-        font-size: 1rem;
-        padding: 10px 18px;
-        border-radius: 8px;
-        border: 1px solid #888;
-        cursor: pointer;
-      }
-      #status {
-        margin-top: 16px;
-        font-weight: 600;
-      }
-      #peers {
-        margin-top: 12px;
-        color: #666;
-      }
-    </style>
-  </head>
-  <body>
-    <h1>🎙️ Sala de Voz (SFU em Go)</h1>
-    <p>
-      Abra esta página em duas abas/dispositivos diferentes e clique em Entrar
-      em cada um.
-    </p>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sala de Voz</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 520px;
+      margin: 40px auto;
+      padding: 0 20px;
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.4rem; }
+    button {
+      font-size: 1rem;
+      padding: 10px 18px;
+      border-radius: 8px;
+      border: 1px solid #888;
+      cursor: pointer;
+    }
+    #status { margin-top: 16px; font-weight: 600; }
+    #peers { margin-top: 12px; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>🎙️ Sala de Voz (SFU em Go)</h1>
+  <p>Abra esta página em duas abas/dispositivos diferentes e clique em Entrar em cada um.</p>
 
-    <button id="join">Entrar na sala</button>
-    <div id="status">Desconectado</div>
-    <div id="peers"></div>
+  <button id="join">Entrar na sala</button>
+  <div id="status">Desconectado</div>
+  <div id="peers"></div>
 
-    <!-- Onde o áudio dos outros participantes vai tocar -->
-    <div id="audios"></div>
+  <!-- Onde o áudio dos outros participantes vai tocar -->
+  <div id="audios"></div>
 
-    <script>
-      // ==================== CONFIGURAÇÃO DE QUALIDADE ====================
-      // Ajuste estes valores conforme sua necessidade.
-      const CONFIG = {
-        // Bitrate do áudio em bits por segundo.
-        //   ~32000  = padrão do WebRTC (voz simples)
-        //   64000   = qualidade "Discord" (bom pra conversa)  <-- padrão daqui
-        //   128000+ = alta fidelidade (bom pra música)
-        bitrate: 128000,
+  <script>
+    // ==================== CONFIGURAÇÃO DE QUALIDADE ====================
+    // Ajuste estes valores conforme sua necessidade.
+    const CONFIG = {
+      // Bitrate do áudio em bits por segundo.
+      //   ~32000  = padrão do WebRTC (voz simples)
+      //   64000   = qualidade "Discord" (bom pra conversa)  <-- padrão daqui
+      //   128000+ = alta fidelidade (bom pra música)
+      bitrate: 64000,
 
-        // Modo música: se true, DESLIGA os filtros do microfone (eco, ruído,
-        // ganho automático) e usa estéreo. Use false para conversa/voz.
-        musica: false,
-      };
-      // ==================================================================
+      // Modo música: se true, DESLIGA os filtros do microfone (eco, ruído,
+      // ganho automático) e usa estéreo. Use false para conversa/voz.
+      musica: false,
+    };
+    // ==================================================================
 
-      const joinBtn = document.getElementById("join");
-      const statusEl = document.getElementById("status");
-      const peersEl = document.getElementById("peers");
-      const audiosEl = document.getElementById("audios");
+    const joinBtn = document.getElementById('join');
+    const statusEl = document.getElementById('status');
+    const peersEl = document.getElementById('peers');
+    const audiosEl = document.getElementById('audios');
 
-      joinBtn.onclick = async () => {
-        joinBtn.disabled = true;
-        statusEl.textContent = "Pedindo acesso ao microfone...";
+    joinBtn.onclick = async () => {
+      joinBtn.disabled = true;
+      statusEl.textContent = 'Pedindo acesso ao microfone...';
 
-        // Restrições de captura do microfone (qualidade da entrada).
-        const audioConstraints = {
-          echoCancellation: !CONFIG.musica, // tira eco (bom pra voz)
-          noiseSuppression: !CONFIG.musica, // tira ruído de fundo (bom pra voz)
-          autoGainControl: !CONFIG.musica, // nivela o volume (bom pra voz)
-          channelCount: CONFIG.musica ? 2 : 1, // estéreo pra música, mono pra voz
-          sampleRate: 48000, // taxa nativa do Opus
-        };
-
-        let stream;
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: audioConstraints,
-            video: false,
-          });
-        } catch (e) {
-          statusEl.textContent =
-            "Não foi possível acessar o microfone: " + e.message;
-          joinBtn.disabled = false;
-          return;
-        }
-
-        const pc = new RTCPeerConnection({
-          iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-        });
-
-        // Envia nosso áudio para o servidor e aplica o bitrate desejado.
-        stream.getTracks().forEach((track) => {
-          const sender = pc.addTrack(track, stream);
-          const params = sender.getParameters();
-          if (!params.encodings) params.encodings = [{}];
-          params.encodings[0].maxBitrate = CONFIG.bitrate;
-          sender
-            .setParameters(params)
-            .catch((err) => console.warn("setParameters:", err));
-        });
-
-        // Toca o áudio que chega dos outros participantes.
-        pc.ontrack = (event) => {
-          const el = document.createElement("audio");
-          el.srcObject = event.streams[0];
-          el.autoplay = true;
-          el.controls = true;
-          audiosEl.appendChild(el);
-          event.track.onended = () => el.remove();
-          updatePeers();
-        };
-
-        pc.onconnectionstatechange = () => {
-          statusEl.textContent = "Conexão: " + pc.connectionState;
-        };
-
-        const ws = new WebSocket(
-          (location.protocol === "https:" ? "wss://" : "ws://") +
-            location.host +
-            "/ws",
-        );
-
-        // Manda candidatos ICE para o servidor.
-        pc.onicecandidate = (e) => {
-          if (e.candidate) {
-            ws.send(
-              JSON.stringify({
-                event: "candidate",
-                data: JSON.stringify(e.candidate),
-              }),
-            );
-          }
-        };
-
-        ws.onopen = () => {
-          statusEl.textContent = "Conectado. Fale à vontade!";
-        };
-        ws.onclose = () => {
-          statusEl.textContent = "Desconectado";
-        };
-
-        // O servidor é quem faz a oferta (padrão do SFU); nós respondemos.
-        ws.onmessage = async (msg) => {
-          const m = JSON.parse(msg.data);
-          if (!m) return;
-
-          if (m.event === "offer") {
-            const offer = JSON.parse(m.data);
-            await pc.setRemoteDescription(offer);
-            const answer = await pc.createAnswer();
-            answer.sdp = ajustarOpus(answer.sdp); // liga FEC, bitrate e estéreo no Opus
-            await pc.setLocalDescription(answer);
-            ws.send(
-              JSON.stringify({ event: "answer", data: JSON.stringify(answer) }),
-            );
-          } else if (m.event === "candidate") {
-            const candidate = JSON.parse(m.data);
-            await pc.addIceCandidate(candidate);
-          }
-        };
+      // Restrições de captura do microfone (qualidade da entrada).
+      const audioConstraints = {
+        echoCancellation: !CONFIG.musica,   // tira eco (bom pra voz)
+        noiseSuppression: !CONFIG.musica,   // tira ruído de fundo (bom pra voz)
+        autoGainControl:  !CONFIG.musica,   // nivela o volume (bom pra voz)
+        channelCount:     CONFIG.musica ? 2 : 1, // estéreo pra música, mono pra voz
+        sampleRate:       48000,            // taxa nativa do Opus
       };
 
-      // Ajusta os parâmetros do codec Opus diretamente no SDP:
-      // - useinbandfec=1  -> correção de erros (aguenta melhor perda de pacotes)
-      // - maxaveragebitrate -> teto de bitrate
-      // - stereo / maxplaybackrate -> qualidade máxima (modo música)
-      function ajustarOpus(sdp) {
-        // Descobre o número de payload do Opus.
-        const m = sdp.match(/a=rtpmap:(\d+) opus\/48000/i);
-        if (!m) return sdp;
-        const pt = m[1];
-
-        let extras = `useinbandfec=1;maxaveragebitrate=${CONFIG.bitrate}`;
-        if (CONFIG.musica) {
-          extras += ";stereo=1;sprop-stereo=1;maxplaybackrate=48000";
-        }
-
-        const fmtpRegex = new RegExp(`(a=fmtp:${pt} )(.*)`);
-        if (fmtpRegex.test(sdp)) {
-          // Já existe uma linha fmtp: acrescenta os parâmetros.
-          return sdp.replace(fmtpRegex, `$1$2;${extras}`);
-        }
-        // Não existe: cria uma logo após o rtpmap do Opus.
-        return sdp.replace(
-          new RegExp(`(a=rtpmap:${pt} opus\\/48000\\/2\\r?\\n)`, "i"),
-          `$1a=fmtp:${pt} ${extras}\r\n`,
-        );
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+      } catch (e) {
+        statusEl.textContent = 'Não foi possível acessar o microfone: ' + e.message;
+        joinBtn.disabled = false;
+        return;
       }
 
-      function updatePeers() {
-        const n = audiosEl.querySelectorAll("audio").length;
-        peersEl.textContent =
-          n === 0
-            ? "Nenhum outro participante ainda."
-            : `Ouvindo ${n} participante(s).`;
+      // Busca a config de STUN/TURN no servidor (credenciais ficam lá, não aqui).
+      let iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+      try {
+        const r = await fetch('/config');
+        if (r.ok) iceConfig = await r.json();
+      } catch (e) {
+        console.warn('Não consegui buscar /config, usando só STUN:', e);
       }
-    </script>
-  </body>
+
+      const pc = new RTCPeerConnection(iceConfig);
+
+      // Envia nosso áudio para o servidor e aplica o bitrate desejado.
+      stream.getTracks().forEach(track => {
+        const sender = pc.addTrack(track, stream);
+        const params = sender.getParameters();
+        if (!params.encodings) params.encodings = [{}];
+        params.encodings[0].maxBitrate = CONFIG.bitrate;
+        sender.setParameters(params).catch(err => console.warn('setParameters:', err));
+      });
+
+      // Toca o áudio que chega dos outros participantes.
+      pc.ontrack = (event) => {
+        const el = document.createElement('audio');
+        el.srcObject = event.streams[0];
+        el.autoplay = true;
+        el.controls = true;
+        audiosEl.appendChild(el);
+        event.track.onended = () => el.remove();
+        updatePeers();
+      };
+
+      pc.onconnectionstatechange = () => {
+        statusEl.textContent = 'Conexão: ' + pc.connectionState;
+      };
+
+      const ws = new WebSocket(
+        (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'
+      );
+
+      // Manda candidatos ICE para o servidor.
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          ws.send(JSON.stringify({ event: 'candidate', data: JSON.stringify(e.candidate) }));
+        }
+      };
+
+      ws.onopen = () => { statusEl.textContent = 'Conectado. Fale à vontade!'; };
+      ws.onclose = () => { statusEl.textContent = 'Desconectado'; };
+
+      // O servidor é quem faz a oferta (padrão do SFU); nós respondemos.
+      ws.onmessage = async (msg) => {
+        const m = JSON.parse(msg.data);
+        if (!m) return;
+
+        if (m.event === 'offer') {
+          const offer = JSON.parse(m.data);
+          await pc.setRemoteDescription(offer);
+          const answer = await pc.createAnswer();
+          answer.sdp = ajustarOpus(answer.sdp);   // liga FEC, bitrate e estéreo no Opus
+          await pc.setLocalDescription(answer);
+          ws.send(JSON.stringify({ event: 'answer', data: JSON.stringify(answer) }));
+        } else if (m.event === 'candidate') {
+          const candidate = JSON.parse(m.data);
+          await pc.addIceCandidate(candidate);
+        }
+      };
+    };
+
+    // Ajusta os parâmetros do codec Opus diretamente no SDP:
+    // - useinbandfec=1  -> correção de erros (aguenta melhor perda de pacotes)
+    // - maxaveragebitrate -> teto de bitrate
+    // - stereo / maxplaybackrate -> qualidade máxima (modo música)
+    function ajustarOpus(sdp) {
+      // Descobre o número de payload do Opus.
+      const m = sdp.match(/a=rtpmap:(\d+) opus\/48000/i);
+      if (!m) return sdp;
+      const pt = m[1];
+
+      let extras = `useinbandfec=1;maxaveragebitrate=${CONFIG.bitrate}`;
+      if (CONFIG.musica) {
+        extras += ';stereo=1;sprop-stereo=1;maxplaybackrate=48000';
+      }
+
+      const fmtpRegex = new RegExp(`(a=fmtp:${pt} )(.*)`);
+      if (fmtpRegex.test(sdp)) {
+        // Já existe uma linha fmtp: acrescenta os parâmetros.
+        return sdp.replace(fmtpRegex, `$1$2;${extras}`);
+      }
+      // Não existe: cria uma logo após o rtpmap do Opus.
+      return sdp.replace(
+        new RegExp(`(a=rtpmap:${pt} opus\\/48000\\/2\\r?\\n)`, 'i'),
+        `$1a=fmtp:${pt} ${extras}\r\n`
+      );
+    }
+
+    function updatePeers() {
+      const n = audiosEl.querySelectorAll('audio').length;
+      peersEl.textContent = n === 0
+        ? 'Nenhum outro participante ainda.'
+        : `Ouvindo ${n} participante(s).`;
+    }
+  </script>
+</body>
 </html>
