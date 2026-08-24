@@ -5,10 +5,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -25,7 +28,10 @@ var (
 
 	listLock        sync.RWMutex
 	peerConnections []peerConnectionState                    // todos os participantes conectados
-	trackLocals     = map[string]*webrtc.TrackLocalStaticRTP{} // áudio de cada pessoa, pronto para redistribuir
+	trackLocals     = map[string]*webrtc.TrackLocalStaticRTP{} // áudio/vídeo de cada pessoa, pronto para redistribuir
+
+	screenLock   sync.Mutex
+	screenSharer *threadSafeWriter // quem está compartilhando a tela agora (nil = ninguém)
 )
 
 // peerConnectionState guarda a conexão WebRTC de um participante e seu websocket.
@@ -139,6 +145,30 @@ func removeTrack(t *webrtc.TrackLocalStaticRTP) {
 	delete(trackLocals, t.ID())
 }
 
+// broadcast envia uma mensagem de sinalização para todo mundo na sala.
+func broadcast(msg *websocketMessage) {
+	listLock.RLock()
+	defer listLock.RUnlock()
+	for _, p := range peerConnections {
+		_ = p.websocket.WriteJSON(msg)
+	}
+}
+
+// clearScreenSharer libera o "direito" de compartilhar tela se for essa a
+// pessoa que estava compartilhando (chamado ao pedir para parar ou ao sair).
+func clearScreenSharer(c *threadSafeWriter) {
+	screenLock.Lock()
+	wasSharer := screenSharer == c
+	if wasSharer {
+		screenSharer = nil
+	}
+	screenLock.Unlock()
+
+	if wasSharer {
+		broadcast(&websocketMessage{Event: "screenshare-stop"})
+	}
+}
+
 // signalPeerConnections garante que cada participante esteja recebendo o áudio
 // de todos os outros, renegociando as conexões quando alguém entra ou sai.
 func signalPeerConnections() {
@@ -221,6 +251,17 @@ func signalPeerConnections() {
 			break
 		}
 	}
+
+	// Avisa todo mundo quantas pessoas estão na sala agora. A lista de
+	// participantes no navegador é 100% anônima (sem nomes/IDs), então em
+	// vez de tentar inferir "alguém saiu" a partir do ciclo de vida das
+	// tracks de WebRTC (o navegador só marca a track como "muted" quando o
+	// m-line para de enviar, nunca como "ended" — então dava pra nunca
+	// atualizar a lista), o servidor manda a contagem certa direto.
+	roster := &websocketMessage{Event: "roster", Data: strconv.Itoa(len(peerConnections))}
+	for _, p := range peerConnections {
+		_ = p.websocket.WriteJSON(roster)
+	}
 }
 
 // websocketHandler cuida de um participante do início ao fim da conexão.
@@ -232,6 +273,7 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	c := &threadSafeWriter{unsafeConn, sync.Mutex{}}
 	defer c.Close()
+	defer clearScreenSharer(c) // se essa pessoa saiu compartilhando a tela, libera para outra
 
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: iceServers(),
@@ -242,9 +284,18 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer peerConnection.Close()
 
-	// Só nos interessa áudio: aceitamos uma track de entrada de áudio.
+	// Aceitamos uma track de entrada de áudio (microfone). O vídeo (tela
+	// compartilhada) é reservado como "sendrecv" já de início: o navegador
+	// negocia essa transceiver como apta a enviar desde o primeiro offer/
+	// answer, então o compartilhamento de tela só precisa de um
+	// replaceTrack() depois, sem nova renegociação.
 	if _, err = peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio,
 		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly}); err != nil {
+		log.Print(err)
+		return
+	}
+	if _, err = peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo,
+		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv}); err != nil {
 		log.Print(err)
 		return
 	}
@@ -282,10 +333,29 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 
-	// Quando chega áudio de alguém, redistribuímos para os demais.
+	// Quando chega áudio ou vídeo de alguém, redistribuímos para os demais.
 	peerConnection.OnTrack(func(t *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		trackLocal := addTrack(t)
 		defer removeTrack(trackLocal)
+
+		// Vídeo depende de quadros-chave (keyframes) pra decodificar; se o
+		// primeiro se perder, quem está assistindo fica com tela preta pra
+		// sempre. Pedimos um novo de tempos em tempos pra essa pessoa, o que
+		// garante que qualquer participante (mesmo quem entrou depois) acabe
+		// recebendo um quadro completo em poucos segundos.
+		if t.Kind() == webrtc.RTPCodecTypeVideo {
+			go func() {
+				ticker := time.NewTicker(2 * time.Second)
+				defer ticker.Stop()
+				for range ticker.C {
+					if err := peerConnection.WriteRTCP([]rtcp.Packet{
+						&rtcp.PictureLossIndication{MediaSSRC: uint32(t.SSRC())},
+					}); err != nil {
+						return
+					}
+				}
+			}()
+		}
 
 		buf := make([]byte, 1500)
 		for {
@@ -336,6 +406,23 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 				log.Println(err)
 				return
 			}
+
+		// A troca de vídeo em si (replaceTrack) não passa por aqui — só o
+		// "aviso" de que alguém começou ou parou de compartilhar, usado para
+		// garantir que só uma pessoa compartilhe por vez e avisar a sala.
+		case "screenshare-start":
+			screenLock.Lock()
+			if screenSharer != nil && screenSharer != c {
+				screenLock.Unlock()
+				_ = c.WriteJSON(&websocketMessage{Event: "screenshare-rejected"})
+				continue
+			}
+			screenSharer = c
+			screenLock.Unlock()
+			broadcast(&websocketMessage{Event: "screenshare-start"})
+
+		case "screenshare-stop":
+			clearScreenSharer(c)
 		}
 	}
 }

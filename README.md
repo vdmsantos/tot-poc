@@ -4,6 +4,13 @@ Servidor central (SFU) que recebe o áudio de cada participante e reencaminha
 para os demais da sala. É assim que o Discord funciona: ninguém se conecta
 direto com ninguém, tudo passa pelo servidor.
 
+## Funcionalidades
+
+- 🎙️ **Áudio em grupo** (SFU): todo mundo ouve todo mundo, servidor no meio.
+- 🖥️ **Compartilhamento de tela**: qualquer participante pode compartilhar a
+  tela para os demais. Só uma pessoa por vez — o botão fica desabilitado para
+  os outros enquanto alguém está compartilhando.
+
 ## O que tem aqui
 
 ```
@@ -37,6 +44,8 @@ Sala de voz rodando em http://localhost:8080
 3. Abra a **mesma URL em outra aba** (ou em outro computador na mesma rede,
    trocando `localhost` pelo IP da máquina) e clique em Entrar também.
 4. Fale em um lado — você ouve no outro. 🎧
+5. Clique em **Compartilhar tela** em uma das abas e escolha uma tela/janela —
+   ela aparece na outra aba automaticamente.
 
 > Dica: use fones de ouvido nos dois lados para não dar microfonia (eco).
 
