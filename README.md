@@ -84,13 +84,14 @@ por um servidor **TURN** (relay). Um grátis:
 3. O Render detecta o `Dockerfile` automaticamente (Runtime: Docker).
 4. Em **Environment**, adicione as variáveis (com os dados do Metered):
 
-   | Variável   | Valor                                             |
-   |------------|---------------------------------------------------|
-   | `TURN_URL` | `turn:SEU_HOST:80,turn:SEU_HOST:443?transport=tcp`|
-   | `TURN_USER`| seu usuário do TURN                               |
-   | `TURN_PASS`| sua senha do TURN                                 |
+   | Variável    | Valor                                              |
+   | ----------- | -------------------------------------------------- |
+   | `TURN_URL`  | `turn:SEU_HOST:80,turn:SEU_HOST:443?transport=tcp` |
+   | `TURN_USER` | seu usuário do TURN                                |
+   | `TURN_PASS` | sua senha do TURN                                  |
 
    (Não precisa definir `PORT` — o Render injeta sozinho.)
+
 5. Clique em **Create Web Service** e aguarde o build.
 
 Ao final você recebe uma URL tipo `https://seu-app.onrender.com`. Abra em dois
@@ -106,3 +107,9 @@ dispositivos e teste. 🎧
 - **Mutar / indicador de quem está falando**.
 - **TURN próprio**: para produção, vale rodar seu próprio servidor TURN
   (ex.: coturn) em vez de depender de um serviço grátis.
+
+## Funcionalidade
+
+- Nome salvo em cache
+- Autenticação básica
+- Filtro de linha

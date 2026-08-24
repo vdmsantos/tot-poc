@@ -30,6 +30,11 @@ var (
 	peerConnections []peerConnectionState                    // todos os participantes conectados
 	trackLocals     = map[string]*webrtc.TrackLocalStaticRTP{} // áudio/vídeo de cada pessoa, pronto para redistribuir
 
+	// Participantes que ficaram devendo uma oferta porque a anterior ainda
+	// não tinha sido respondida quando algo mudou (ver signalPeerConnections
+	// e o "case answer"). Só acessado com listLock já travado.
+	pendingRenegotiation = map[*threadSafeWriter]bool{}
+
 	screenLock   sync.Mutex
 	screenSharer *threadSafeWriter // quem está compartilhando a tela agora (nil = ninguém)
 )
@@ -38,6 +43,13 @@ var (
 type peerConnectionState struct {
 	peerConnection *webrtc.PeerConnection
 	websocket      *threadSafeWriter
+
+	// Senders de tela e câmera reservados desta pessoa. Começam com uma track
+	// "placeholder" interna do Pion (não tem dono real em trackLocals), então
+	// a limpeza genérica em signalPeerConnections os removeria como se
+	// fossem lixo, liberando o slot pro Pion reaproveitar pra encaminhar o
+	// vídeo de OUTRA pessoa — embaralhando tela e câmera. Ver uso abaixo.
+	ownVideoSenders [2]*webrtc.RTPSender
 }
 
 // threadSafeWriter serializa as escritas no websocket (várias goroutines escrevem nele).
@@ -118,11 +130,20 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-// addTrack registra o áudio recebido de um participante para poder redistribuí-lo.
-func addTrack(t *webrtc.TrackRemote) *webrtc.TrackLocalStaticRTP {
+// addTrack registra a track recebida de um participante para poder
+// redistribuí-la. O ID usado aqui (t.ID(), sem alterar) é o que faz a
+// prevenção de eco funcionar: cada participante reconhece "essa track sou eu
+// mesmo" comparando com o ID cru do que ele próprio está enviando — por isso
+// não dá pra prefixar/alterar esse ID aqui (quebra essa comparação em
+// signalPeerConnections). Pra tela/câmera, avisamos o tipo separadamente por
+// WebSocket (ver broadcastTrackKind).
+func addTrack(t *webrtc.TrackRemote, label string) *webrtc.TrackLocalStaticRTP {
 	listLock.Lock()
 	defer func() {
 		listLock.Unlock()
+		if label == "screen" || label == "cam" {
+			broadcastTrackKind(t.ID(), label)
+		}
 		signalPeerConnections()
 	}()
 
@@ -143,6 +164,14 @@ func removeTrack(t *webrtc.TrackLocalStaticRTP) {
 	}()
 
 	delete(trackLocals, t.ID())
+}
+
+// broadcastTrackKind avisa a sala se uma track de vídeo que acabou de chegar
+// é tela compartilhada ou câmera, pra cada navegador saber como exibi-la
+// quando ela chegar pelo WebRTC (sem isso, um vídeo é só um vídeo — o
+// kind do WebRTC não distingue os dois).
+func broadcastTrackKind(id, kind string) {
+	broadcast(&websocketMessage{Event: "track-kind", Data: kind + ":" + id})
 }
 
 // broadcast envia uma mensagem de sinalização para todo mundo na sala.
@@ -179,9 +208,21 @@ func signalPeerConnections() {
 		for i := range peerConnections {
 			// Limpa conexões que já fecharam.
 			if peerConnections[i].peerConnection.ConnectionState() == webrtc.PeerConnectionStateClosed {
+				delete(pendingRenegotiation, peerConnections[i].websocket)
 				peerConnections = append(peerConnections[:i], peerConnections[i+1:]...)
 				return true
 			}
+
+			// Só vale a pena renegociar (mandar uma oferta nova) se algo
+			// realmente mudou pra essa pessoa, se é a primeira vez (ainda não
+			// tem nem uma oferta local), ou se ficamos devendo uma oferta de
+			// uma rodada anterior (ver mais abaixo). Sem isso, toda resposta
+			// de qualquer participante reiniciava uma rodada de ofertas pra
+			// TODOS os outros mesmo sem nada de novo — uma cascata que, com
+			// tela+câmera mudando quase ao mesmo tempo, corrompia a
+			// negociação e fazia o vídeo errado chegar pra quem assiste.
+			changed := peerConnections[i].peerConnection.CurrentLocalDescription() == nil ||
+				pendingRenegotiation[peerConnections[i].websocket]
 
 			// O que este participante já está enviando (recebendo) hoje.
 			existingSenders := map[string]bool{}
@@ -189,6 +230,17 @@ func signalPeerConnections() {
 				if sender.Track() == nil {
 					continue
 				}
+
+				// O sender de tela/câmera reservado desta pessoa nunca é
+				// mexido por aqui: ele começa com uma track "placeholder"
+				// interna do Pion (sem dono em trackLocals), e se deixarmos a
+				// limpeza abaixo removê-la, o Pion libera esse slot e passa a
+				// reaproveitá-lo pra encaminhar o vídeo de OUTRA pessoa —
+				// embaralhando tela e câmera entre participantes.
+				if sender == peerConnections[i].ownVideoSenders[0] || sender == peerConnections[i].ownVideoSenders[1] {
+					continue
+				}
+
 				existingSenders[sender.Track().ID()] = true
 
 				// Se o dono desse track já saiu, remove daqui.
@@ -196,6 +248,7 @@ func signalPeerConnections() {
 					if err := peerConnections[i].peerConnection.RemoveTrack(sender); err != nil {
 						return true
 					}
+					changed = true
 				}
 			}
 
@@ -213,7 +266,22 @@ func signalPeerConnections() {
 					if _, err := peerConnections[i].peerConnection.AddTrack(trackLocals[trackID]); err != nil {
 						return true
 					}
+					changed = true
 				}
+			}
+
+			if !changed {
+				continue
+			}
+
+			// Se uma oferta anterior pra essa pessoa ainda não foi respondida,
+			// não manda outra agora: chamar CreateOffer/SetLocalDescription de
+			// novo nesse estado corrompe a negociação (a resposta antiga não
+			// bate mais com a oferta nova). Marcamos como pendente pra tentar
+			// de novo assim que a resposta chegar (ver "case answer").
+			if peerConnections[i].peerConnection.SignalingState() != webrtc.SignalingStateStable {
+				pendingRenegotiation[peerConnections[i].websocket] = true
+				continue
 			}
 
 			// Cria uma nova oferta e envia para o navegador.
@@ -235,6 +303,7 @@ func signalPeerConnections() {
 			}); err != nil {
 				return true
 			}
+			delete(pendingRenegotiation, peerConnections[i].websocket)
 		}
 		return false
 	}
@@ -284,25 +353,37 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer peerConnection.Close()
 
-	// Aceitamos uma track de entrada de áudio (microfone). O vídeo (tela
-	// compartilhada) é reservado como "sendrecv" já de início: o navegador
-	// negocia essa transceiver como apta a enviar desde o primeiro offer/
-	// answer, então o compartilhamento de tela só precisa de um
-	// replaceTrack() depois, sem nova renegociação.
+	// Aceitamos uma track de entrada de áudio (microfone). Tela compartilhada
+	// e câmera têm, cada uma, seu próprio canal de vídeo "sendrecv" já
+	// reservado desde o início: o navegador negocia essas transceivers como
+	// aptas a enviar desde o primeiro offer/answer, então ligar a câmera ou
+	// compartilhar a tela é só um replaceTrack() depois, sem nova
+	// renegociação — e os dois podem ficar ativos ao mesmo tempo.
 	if _, err = peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio,
 		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly}); err != nil {
 		log.Print(err)
 		return
 	}
-	if _, err = peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo,
-		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv}); err != nil {
+	screenTransceiver, err := peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo,
+		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv})
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	cameraTransceiver, err := peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo,
+		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv})
+	if err != nil {
 		log.Print(err)
 		return
 	}
 
 	// Registra este participante na lista.
 	listLock.Lock()
-	peerConnections = append(peerConnections, peerConnectionState{peerConnection, c})
+	peerConnections = append(peerConnections, peerConnectionState{
+		peerConnection:  peerConnection,
+		websocket:       c,
+		ownVideoSenders: [2]*webrtc.RTPSender{screenTransceiver.Sender(), cameraTransceiver.Sender()},
+	})
 	listLock.Unlock()
 
 	// Envia candidatos ICE (rotas de rede) para o navegador.
@@ -334,8 +415,16 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Quando chega áudio ou vídeo de alguém, redistribuímos para os demais.
-	peerConnection.OnTrack(func(t *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		trackLocal := addTrack(t)
+	peerConnection.OnTrack(func(t *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		label := "mic"
+		switch receiver {
+		case screenTransceiver.Receiver():
+			label = "screen"
+		case cameraTransceiver.Receiver():
+			label = "cam"
+		}
+
+		trackLocal := addTrack(t, label)
 		defer removeTrack(trackLocal)
 
 		// Vídeo depende de quadros-chave (keyframes) pra decodificar; se o
@@ -406,6 +495,11 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 				log.Println(err)
 				return
 			}
+			// A conexão acabou de voltar a ficar "estável" (pode receber uma
+			// nova oferta). Se algo mudou enquanto esperávamos essa resposta
+			// (ex.: a câmera ligou logo depois da tela), signalPeerConnections
+			// tinha pulado o envio daquela oferta — agora sim mandamos.
+			signalPeerConnections()
 
 		// A troca de vídeo em si (replaceTrack) não passa por aqui — só o
 		// "aviso" de que alguém começou ou parou de compartilhar, usado para
@@ -423,6 +517,13 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 
 		case "screenshare-stop":
 			clearScreenSharer(c)
+
+		// Câmera não tem exclusividade (várias pessoas podem ligar ao mesmo
+		// tempo), então só repassamos o aviso — o "data" é o ID (do lado do
+		// navegador) do MediaStream dessa pessoa, usado pelos outros clientes
+		// pra saber qual miniatura de vídeo remover.
+		case "camera-stop":
+			broadcast(&websocketMessage{Event: "camera-stop", Data: message.Data})
 		}
 	}
 }

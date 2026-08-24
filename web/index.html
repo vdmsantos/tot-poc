@@ -158,10 +158,47 @@
       background: #000;
       box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
     }
+
+    /* Grade de câmeras: um quadrado maior por pessoa com a câmera ligada,
+       incluindo a sua própria — parecido com Zoom/Meet. */
+    #cameraGrid:empty { display: none; }
+    #cameraGrid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      width: 90vw;
+      max-width: 640px;
+    }
+    .camera-tile {
+      position: relative;
+      aspect-ratio: 1 / 1;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #000;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, .3);
+    }
+    .camera-tile video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .camera-tile video.mirror { transform: scaleX(-1); } /* só a sua própria câmera */
+    .camera-tile .tile-label {
+      position: absolute;
+      left: 8px;
+      bottom: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+    }
   </style>
 </head>
 <body>
   <div id="screens"></div>
+
+  <div id="cameraGrid"></div>
 
   <div class="card">
     <div class="channel">
@@ -193,6 +230,11 @@
             <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/>
             <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 19 11z"/>
             <line class="slash" x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:none"/>
+          </svg>
+        </button>
+        <button id="cameraBtn" class="icon-btn" title="Ligar câmera" disabled>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M4 6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-2.4l4.2 2.8A1 1 0 0 0 21 15.6V8.4a1 1 0 0 0-1.55-.84L15 10.4V8a2 2 0 0 0-2-2H4z"/>
           </svg>
         </button>
         <button id="shareScreen" class="icon-btn" title="Compartilhar tela" disabled>
@@ -232,11 +274,19 @@
       videoMaxWidth: 1920,
       videoMaxHeight: 1080,
       videoMaxFps: 30,
+
+      // Câmera: aparece em quadrados na grade acima da lista, então merece
+      // uma resolução um pouco melhor que uma miniatura.
+      cameraBitrate: 600_000,
+      cameraMaxWidth: 480,
+      cameraMaxHeight: 480,
+      cameraMaxFps: 24,
     };
     // ==================================================================
 
     const joinBtn = document.getElementById('join');
     const shareBtn = document.getElementById('shareScreen');
+    const cameraBtn = document.getElementById('cameraBtn');
     const muteBtn = document.getElementById('muteBtn');
     const leaveBtn = document.getElementById('leaveBtn');
     const joinWrapEl = document.getElementById('joinWrap');
@@ -245,6 +295,7 @@
     const participantsEl = document.getElementById('participants');
     const audiosEl = document.getElementById('audios');
     const screensEl = document.getElementById('screens');
+    const cameraGridEl = document.getElementById('cameraGrid');
 
     const ICON_MIC_SMALL = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 19 11z"/></svg>';
     const ICON_MIC_MUTED_SMALL = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 19 11z"/><line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
@@ -260,6 +311,15 @@
     let sharingScreen = false;
     let remoteScreenEl = null; // <video> de quem está compartilhando agora (se for outra pessoa)
     let otherCount = 0; // quantidade de OUTROS participantes, informada pelo servidor
+    const trackKinds = new Map(); // id da track (WebRTC) -> "screen" | "cam", avisado pelo servidor
+
+    let cameraSender = null;
+    let placeholderCameraTrack = null;
+    let cameraTrack = null;
+    let cameraOn = false;
+    let localCameraPreviewEl = null;
+    let myStreamId = null; // id do nosso MediaStream local — usado pra identificar nossa câmera nos avisos de "parei a câmera"
+    const remoteCameras = new Map(); // streamId -> elemento <video> da câmera de outra pessoa
 
     joinBtn.onclick = async () => {
       joinBtn.disabled = true;
@@ -286,6 +346,7 @@
       }
 
       localAudioTrack = stream.getAudioTracks()[0];
+      myStreamId = stream.id;
 
       // Busca a config de STUN/TURN no servidor (credenciais ficam lá, não aqui).
       let iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
@@ -314,23 +375,64 @@
       placeholderVideoTrack = document.createElement('canvas').captureStream(0).getVideoTracks()[0];
       videoSender = pc.addTrack(placeholderVideoTrack, stream);
 
-      // Toca o áudio e mostra o vídeo (tela compartilhada) que chegam dos
-      // outros participantes.
+      // Mesma ideia pra câmera: canal de vídeo próprio, reservado desde já
+      // com uma track "vazia", pra poder ligar a câmera depois só com
+      // replaceTrack — e sem depender da tela compartilhada.
+      placeholderCameraTrack = document.createElement('canvas').captureStream(0).getVideoTracks()[0];
+      cameraSender = pc.addTrack(placeholderCameraTrack, stream);
+
+      // Toca o áudio e mostra o vídeo (tela compartilhada e câmeras) que
+      // chegam dos outros participantes. O WebRTC só diz "isso é vídeo", não
+      // se é tela ou câmera — o servidor avisa isso à parte pelo evento
+      // 'track-kind' (guardado em trackKinds), que a essa altura já deve ter
+      // chegado (o servidor manda antes de renegociar a oferta que traz essa
+      // track pra cá).
+      //
+      // Os canais de tela/câmera de cada pessoa existem desde a conexão
+      // (reservados, "sendrecv") mesmo quando ninguém ligou nada ainda —
+      // então o navegador dispara ontrack "fantasma" pra eles logo ao
+      // conectar, sem conteúdo real nenhum. Só tratamos vídeo cujo tipo o
+      // servidor realmente confirmou; o resto a gente ignora.
       pc.ontrack = (event) => {
-        const isVideo = event.track.kind === 'video';
-        const el = document.createElement(isVideo ? 'video' : 'audio');
-        el.srcObject = event.streams[0];
-        el.autoplay = true;
-        if (isVideo) {
+        // Mic, tela e câmera da MESMA pessoa compartilham o mesmo MediaStream
+        // (é assim que a lista de participantes correlaciona a câmera com o
+        // dono certo — ver joinBtn.onclick). Só que isso significa que
+        // event.streams[0] chega aqui com VÁRIAS tracks de vídeo juntas: se
+        // um <video> recebesse esse stream inteiro, o navegador escolheria
+        // sozinho qual track tocar (podia sair câmera onde devia ser tela).
+        // Por isso montamos um MediaStream novo só com a track desta vez.
+        const streamId = event.streams[0] ? event.streams[0].id : event.track.id;
+        const soloStream = new MediaStream([event.track]);
+
+        if (event.track.kind === 'audio') {
+          const el = document.createElement('audio');
+          el.srcObject = soloStream;
+          el.autoplay = true;
+          audiosEl.appendChild(el);
+          event.track.onended = () => el.remove();
+          return;
+        }
+
+        const kind = trackKinds.get(event.track.id);
+        if (kind === 'cam') {
+          const el = document.createElement('video');
+          el.srcObject = soloStream;
+          el.autoplay = true;
+          el.playsInline = true;
+          el.muted = true;
+          remoteCameras.set(streamId, el);
+          renderCameraGrid();
+        } else if (kind === 'screen') {
+          const el = document.createElement('video');
+          el.srcObject = soloStream;
+          el.autoplay = true;
           el.playsInline = true;
           el.muted = true; // a tela compartilhada não tem áudio nesta versão
           if (remoteScreenEl) remoteScreenEl.remove();
           remoteScreenEl = el;
           screensEl.appendChild(el);
-        } else {
-          audiosEl.appendChild(el);
+          event.track.onended = () => el.remove();
         }
-        event.track.onended = () => el.remove();
       };
 
       pc.onconnectionstatechange = () => {
@@ -360,6 +462,7 @@
         joinWrapEl.hidden = true;
         voiceBarEl.hidden = false;
         shareBtn.disabled = false;
+        cameraBtn.disabled = false;
         renderParticipants();
       };
       ws.onclose = () => leaveRoom();
@@ -399,6 +502,14 @@
           }
         } else if (m.event === 'screenshare-rejected') {
           alert('Alguém já está compartilhando a tela. Tente de novo quando essa pessoa parar.');
+        } else if (m.event === 'camera-stop') {
+          if (m.data !== myStreamId) {
+            remoteCameras.delete(m.data);
+            renderCameraGrid();
+          }
+        } else if (m.event === 'track-kind') {
+          const sep = m.data.indexOf(':');
+          trackKinds.set(m.data.slice(sep + 1), m.data.slice(0, sep));
         }
       };
     };
@@ -451,6 +562,68 @@
       ws.send(JSON.stringify({ event: 'screenshare-start', data: '' }));
     };
 
+    cameraBtn.onclick = async () => {
+      if (cameraOn) {
+        await stopCamera();
+        return;
+      }
+
+      let camStream;
+      try {
+        camStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { max: CONFIG.cameraMaxWidth },
+            height: { max: CONFIG.cameraMaxHeight },
+            frameRate: { max: CONFIG.cameraMaxFps },
+          },
+          audio: false,
+        });
+      } catch (e) {
+        return; // sem câmera ou permissão negada
+      }
+
+      cameraTrack = camStream.getVideoTracks()[0];
+      await cameraSender.replaceTrack(cameraTrack);
+
+      const params = cameraSender.getParameters();
+      if (!params.encodings) params.encodings = [{}];
+      params.encodings[0].maxBitrate = CONFIG.cameraBitrate;
+      cameraSender.setParameters(params).catch(err => console.warn('setParameters (câmera):', err));
+
+      // Se o dispositivo for desconectado no meio do caminho.
+      cameraTrack.onended = () => stopCamera();
+
+      localCameraPreviewEl = document.createElement('video');
+      localCameraPreviewEl.srcObject = camStream;
+      localCameraPreviewEl.autoplay = true;
+      localCameraPreviewEl.playsInline = true;
+      localCameraPreviewEl.muted = true;
+      localCameraPreviewEl.className = 'mirror';
+
+      cameraOn = true;
+      cameraBtn.classList.add('active');
+      cameraBtn.title = 'Desligar câmera';
+      renderCameraGrid();
+    };
+
+    async function stopCamera() {
+      if (!cameraOn) return;
+      cameraOn = false;
+      cameraBtn.classList.remove('active');
+      cameraBtn.title = 'Ligar câmera';
+
+      await cameraSender.replaceTrack(placeholderCameraTrack);
+      if (cameraTrack) {
+        cameraTrack.stop();
+        cameraTrack = null;
+      }
+      localCameraPreviewEl = null;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ event: 'camera-stop', data: myStreamId }));
+      }
+      renderCameraGrid();
+    }
+
     async function stopSharing() {
       if (!sharingScreen) return;
       sharingScreen = false;
@@ -471,14 +644,18 @@
 
     function leaveRoom() {
       if (sharingScreen) stopSharing();
+      if (cameraOn) stopCamera();
       if (ws) { ws.onclose = null; ws.close(); ws = null; }
       if (pc) { pc.close(); pc = null; }
       if (localAudioTrack) { localAudioTrack.stop(); localAudioTrack = null; }
       if (placeholderVideoTrack) { placeholderVideoTrack.stop(); placeholderVideoTrack = null; }
+      if (placeholderCameraTrack) { placeholderCameraTrack.stop(); placeholderCameraTrack = null; }
 
       audiosEl.innerHTML = '';
       screensEl.innerHTML = '';
       remoteScreenEl = null;
+      remoteCameras.clear();
+      cameraGridEl.innerHTML = '';
       participantsEl.innerHTML = '';
       micEnabled = true;
       sharingScreen = false;
@@ -487,6 +664,7 @@
       voiceBarEl.hidden = true;
       joinWrapEl.hidden = false;
       joinBtn.disabled = false;
+      cameraBtn.disabled = true;
       hintEl.textContent = 'Abra esta mesma página em outra aba ou dispositivo pra testar.';
       hintEl.classList.remove('error');
     }
@@ -520,9 +698,7 @@
 
     function renderParticipants() {
       participantsEl.innerHTML = '';
-      participantsEl.appendChild(
-        participantRow('Você', 'V', !micEnabled)
-      );
+      participantsEl.appendChild(participantRow('Você', 'V', !micEnabled));
       for (let i = 1; i <= otherCount; i++) {
         participantsEl.appendChild(participantRow(`Participante ${i}`, 'P', false));
       }
@@ -537,6 +713,34 @@
         <span class="mic-state${muted ? ' muted' : ''}">${muted ? ICON_MIC_MUTED_SMALL : ICON_MIC_SMALL}</span>
       `;
       return li;
+    }
+
+    // Grade de câmeras: um quadrado por pessoa com a câmera ligada, incluindo
+    // a sua própria (sempre a primeira). Construído via DOM (não innerHTML)
+    // porque precisamos "mover" os elementos <video> de verdade pra dentro
+    // dos quadrados — um template string recriaria o vídeo do zero e
+    // perderia o stream.
+    function renderCameraGrid() {
+      cameraGridEl.innerHTML = '';
+      if (cameraOn && localCameraPreviewEl) {
+        cameraGridEl.appendChild(cameraTile(localCameraPreviewEl, 'Você'));
+      }
+      let i = 1;
+      for (const el of remoteCameras.values()) {
+        cameraGridEl.appendChild(cameraTile(el, `Participante ${i}`));
+        i++;
+      }
+    }
+
+    function cameraTile(videoEl, label) {
+      const tile = document.createElement('div');
+      tile.className = 'camera-tile';
+      tile.appendChild(videoEl);
+      const labelEl = document.createElement('span');
+      labelEl.className = 'tile-label';
+      labelEl.textContent = label;
+      tile.appendChild(labelEl);
+      return tile;
     }
   </script>
 </body>
