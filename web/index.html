@@ -7,266 +7,430 @@
   <style>
     :root {
       color-scheme: dark;
-      --bg: #313338;
-      --bg-card: #2b2d31;
-      --bg-elevated: #1e1f22;
+      --bg: #1e1f22;
+      --bg-panel: #2b2d31;
+      --bg-elevated: #313338;
       --bg-hover: #3f4248;
+      --tile: #111214;
       --text: #f2f3f5;
-      --text-muted: #949ba4;
-      --text-dim: #6d6f78;
+      --text-muted: #b5bac1;
+      --text-dim: #80848e;
       --green: #23a55a;
       --red: #da373c;
       --accent: #5865f2;
       --accent-hover: #4752c4;
+      --radius: 12px;
     }
     * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       margin: 0;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 16px;
-      padding: 16px;
       background: var(--bg);
       color: var(--text);
       font-family: "gg sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden; /* a página nunca rola: cada área cuida do seu espaço */
     }
-    .card {
-      width: 100%;
-      max-width: 300px;
-      background: var(--bg-card);
-      border-radius: 8px;
-      overflow: hidden;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
-    }
-    .channel {
+    button { font: inherit; cursor: pointer; border: none; color: inherit; }
+
+    /* ---------------- Entrada ---------------- */
+    .lobby {
+      flex: 1;
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 14px 12px 8px;
-      color: var(--text-muted);
+      justify-content: center;
+      padding: 24px;
+    }
+    .lobby[hidden] { display: none; }
+    .lobby-card {
+      width: 100%;
+      max-width: 400px;
+      background: var(--bg-panel);
+      border-radius: 16px;
+      padding: 36px 30px;
+      text-align: center;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, .45);
+    }
+    .lobby-icon {
+      width: 60px; height: 60px;
+      margin: 0 auto 18px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff;
+    }
+    .lobby-card h1 { margin: 0 0 6px; font-size: 22px; }
+    .lobby-card .sub { margin: 0 0 24px; color: var(--text-muted); font-size: 14px; }
+    .btn-primary {
+      width: 100%;
+      background: var(--accent);
+      color: #fff;
+      padding: 13px;
+      border-radius: 8px;
       font-weight: 600;
       font-size: 15px;
     }
-    .channel svg { flex-shrink: 0; }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: .6; cursor: default; }
+    .hint {
+      margin-top: 14px;
+      color: var(--text-dim);
+      font-size: 12.5px;
+      line-height: 1.5;
+      min-height: 18px;
+    }
+    .hint.error { color: var(--red); }
 
+    /* ---------------- Sala ---------------- */
+    .room { flex: 1; display: flex; min-height: 0; position: relative; }
+    .room[hidden] { display: none; }
+
+    .stage {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      padding: 16px;
+      gap: 12px;
+    }
+
+    /* A tela compartilhada. O <video> fica no tamanho natural do conteúdo
+       (width/height auto + max 100%) em vez de esticar numa caixa fixa: assim
+       não sobra moldura preta em volta além do que o próprio conteúdo já tem. */
+    .stage-screen {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .stage-screen[hidden] { display: none; }
+    .stage-screen video {
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      display: block;
+      border-radius: var(--radius);
+      background: #000;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, .5);
+    }
+    .screen-badge {
+      position: absolute;
+      top: 10px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      background: rgba(0, 0, 0, .7);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    /* Câmeras. Mesmo container nos dois modos, só muda a classe:
+       "grid" quando ele é o palco, "strip" quando divide espaço com a tela. */
+    .cameras { display: flex; gap: 10px; min-width: 0; }
+    .cameras:empty { display: none; }
+    /* flex-wrap em vez de grid: quando a última linha fica incompleta (3
+       pessoas em 2 colunas, por exemplo), o quadro sobrando fica centralizado
+       em vez de encostado num canto. */
+    .cameras.grid {
+      flex: 1;
+      min-height: 0;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-content: center;
+      justify-content: center;
+    }
+    .cameras.grid .tile { width: var(--tile-w, 320px); flex: 0 0 auto; }
+
+    .cameras.strip {
+      flex: 0 0 auto;
+      height: 124px;
+      justify-content: center;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: thin;
+    }
+    .cameras.strip .tile { height: 100%; width: auto; flex: 0 0 auto; }
+
+    .tile {
+      position: relative;
+      background: var(--tile);
+      border-radius: var(--radius);
+      overflow: hidden;
+      aspect-ratio: 16 / 9;
+      min-width: 0;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, .35);
+      outline: 2px solid transparent;
+      outline-offset: -2px;
+      transition: outline-color .12s ease;
+    }
+    .tile.falando { outline-color: var(--green); }
+    .tile video {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .tile video.mirror { transform: scaleX(-1); }
+    /* A prévia da própria tela não pode ser cortada: mostra o enquadramento
+       exato que os outros estão vendo. */
+    .tile.tela video { object-fit: contain; background: #000; }
+    .tile.tela { cursor: pointer; outline-color: var(--accent); }
+
+    /* Sem câmera: avatar no lugar do vídeo, pra grade nunca ficar vazia. */
+    .tile-avatar {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .tile-avatar span {
+      width: 22%;
+      max-width: 76px;
+      min-width: 44px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #5865f2, #8791ff);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700;
+      color: #fff;
+      font-size: clamp(14px, 2.2vw, 26px);
+    }
+    .tile.self .tile-avatar span { background: linear-gradient(135deg, #23a55a, #3ba55d); }
+
+    .tile-label {
+      position: absolute;
+      left: 8px; bottom: 8px;
+      max-width: calc(100% - 16px);
+      display: flex; align-items: center; gap: 6px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, .62);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tile-label .mic-off { color: var(--red); display: flex; flex-shrink: 0; }
+
+    /* ---------------- Painel de participantes ---------------- */
+    .sidebar {
+      flex: 0 0 250px;
+      width: 250px;
+      background: var(--bg-panel);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .sidebar[hidden] { display: none; }
+    .sidebar-head {
+      padding: 16px 16px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
     .participants {
       list-style: none;
       margin: 0;
-      padding: 0 8px;
+      padding: 0 8px 12px;
+      overflow-y: auto;
       display: flex;
       flex-direction: column;
       gap: 2px;
     }
     .participant {
-      display: flex;
-      align-items: center;
-      gap: 8px;
+      display: flex; align-items: center; gap: 9px;
       padding: 6px 8px;
-      border-radius: 4px;
+      border-radius: 6px;
       font-size: 14px;
     }
     .participant:hover { background: var(--bg-hover); }
-    .avatar {
-      width: 28px;
-      height: 28px;
+    .participant .avatar {
+      width: 30px; height: 30px;
       border-radius: 50%;
       background: linear-gradient(135deg, #5865f2, #8791ff);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 12px;
-      font-weight: 700;
-      color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; color: #fff;
       flex-shrink: 0;
+      outline: 2px solid transparent;
+      outline-offset: 1px;
+      transition: outline-color .12s ease;
     }
     .participant.self .avatar { background: linear-gradient(135deg, #23a55a, #3ba55d); }
+    .participant.falando .avatar { outline-color: var(--green); }
     .pname {
       flex: 1;
-      color: var(--text);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: var(--text-muted);
     }
+    .participant.self .pname { color: var(--text); }
     .badges { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-    .badges .badge { display: flex; color: var(--text-muted); }
-    .badges .badge.muted { color: var(--red); }
+    .badges .badge { display: flex; color: var(--text-dim); }
     .badges .badge.on { color: var(--green); }
+    .badges .badge.muted { color: var(--red); }
 
-    .join-wrap { padding: 8px 12px 14px; }
-    button { font: inherit; cursor: pointer; border: none; }
-    .join-btn {
-      width: 100%;
-      background: var(--accent);
-      color: #fff;
-      padding: 10px;
-      border-radius: 6px;
-      font-weight: 600;
-      font-size: 14px;
+    /* ---------------- Barra de controles ---------------- */
+    .controlbar {
+      flex: 0 0 auto;
+      background: var(--bg-panel);
+      border-top: 1px solid rgba(0, 0, 0, .28);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
     }
-    .join-btn:hover:not(:disabled) { background: var(--accent-hover); }
-    .join-btn:disabled { opacity: .6; cursor: default; }
-    .hint {
-      margin-top: 10px;
-      color: var(--text-dim);
-      font-size: 12px;
-      line-height: 1.4;
-      text-align: center;
+    .controlbar[hidden] { display: none; }
+    .cb-status { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 9px; }
+    .cb-status .dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--green); flex-shrink: 0;
     }
-    .hint.error { color: var(--red); }
+    .cb-status-text { min-width: 0; font-size: 12.5px; line-height: 1.35; }
+    .cb-status-text .l1 { color: var(--green); font-weight: 600; }
+    .cb-status-text .l2 {
+      color: var(--text-muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .cb-controls { display: flex; gap: 10px; flex: 0 0 auto; }
+    .cb-right { flex: 1 1 0; display: flex; justify-content: flex-end; }
 
-    .voice-bar { background: var(--bg-elevated); padding: 8px 10px; margin-top: 8px; }
-    .voice-status { display: flex; align-items: center; gap: 8px; padding: 2px 4px 10px; }
-    .voice-status .dot {
-      width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0;
-    }
-    .voice-status-text { font-size: 12px; line-height: 1.3; overflow: hidden; }
-    .voice-status-text .line1 { color: var(--green); font-weight: 600; }
-    .voice-status-text .line2 {
-      color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-
-    .controls { display: flex; align-items: center; justify-content: center; gap: 10px; }
     .icon-btn {
-      width: 34px; height: 34px;
+      width: 44px; height: 44px;
       border-radius: 50%;
       background: var(--bg-hover);
-      color: var(--text);
       display: flex; align-items: center; justify-content: center;
+      transition: background .12s ease, color .12s ease;
     }
-    .icon-btn:hover:not(:disabled):not(.muted-btn):not(.active) { background: #4a4d54; }
-    .icon-btn.active { background: var(--text); color: var(--bg-elevated); }
-    .icon-btn.muted-btn { background: var(--red); color: #fff; }
-    .icon-btn.muted-btn:hover { background: #c62d31; }
-    .icon-btn.leave { color: var(--text-muted); }
-    .icon-btn.leave:hover:not(:disabled) { color: #fff; background: var(--red); }
-    .icon-btn:disabled { opacity: .4; cursor: default; }
+    .icon-btn:hover:not(:disabled):not(.danger):not(.active):not(.on) { background: #4a4d54; }
+    .icon-btn.active { background: var(--text); color: var(--bg); }
+    .icon-btn.on { background: var(--red); color: #fff; }
+    .icon-btn.on:hover { background: #c62d31; }
+    .icon-btn.danger { background: var(--red); color: #fff; }
+    .icon-btn.danger:hover { background: #c62d31; }
+    .icon-btn:disabled { opacity: .38; cursor: default; }
+    .icon-btn.small { width: 38px; height: 38px; background: transparent; color: var(--text-muted); }
+    .icon-btn.small:hover { background: var(--bg-hover); color: var(--text); }
+    .icon-btn.small.active { background: var(--bg-hover); color: var(--text); }
 
-    /* A tela compartilhada fica fora do card (que é pequeno, estilo
-       Discord) pra poder ocupar quase a tela toda enquanto alguém
-       apresenta. */
-    #screens:empty { display: none; }
-    #screens {
-      width: 90vw;
-      max-width: 90vw;
+    /* ---------------- Telas estreitas ---------------- */
+    @media (max-width: 900px) {
+      .sidebar {
+        position: absolute;
+        top: 0; right: 0; bottom: 0;
+        z-index: 5;
+        box-shadow: -8px 0 32px rgba(0, 0, 0, .5);
+      }
+      .stage { padding: 10px; }
+      .cameras.strip { height: 96px; }
+      .cb-status-text .l1 { display: none; }
     }
-    #screens video {
-      display: block;
-      width: 100%;
-      max-height: 70vh;
-      object-fit: contain;
-      border-radius: 8px;
-      background: #000;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
-    }
-
-    /* Grade de câmeras: um quadrado maior por pessoa com a câmera ligada,
-       incluindo a sua própria — parecido com Zoom/Meet. */
-    #cameraGrid:empty { display: none; }
-    #cameraGrid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 10px;
-      width: 90vw;
-      max-width: 640px;
-    }
-    .camera-tile {
-      position: relative;
-      aspect-ratio: 1 / 1;
-      border-radius: 10px;
-      overflow: hidden;
-      background: #000;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, .3);
-    }
-    .camera-tile video {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }
-    .camera-tile video.mirror { transform: scaleX(-1); } /* só a sua própria câmera */
-    .camera-tile .tile-label {
-      position: absolute;
-      left: 8px;
-      bottom: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      color: #fff;
-      text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+    @media (max-width: 620px) {
+      .icon-btn { width: 40px; height: 40px; }
+      .cb-status { display: none; }
+      .cb-right { flex: 0 0 auto; }
+      .controlbar { justify-content: center; }
     }
 
     .toast {
       position: fixed;
-      left: 50%;
-      bottom: 20px;
+      left: 50%; bottom: 88px;
       transform: translateX(-50%);
+      max-width: min(440px, calc(100vw - 32px));
       background: var(--bg-elevated);
-      color: var(--text);
       border-left: 3px solid var(--red);
-      padding: 10px 14px;
-      border-radius: 6px;
+      padding: 11px 15px;
+      border-radius: 8px;
       font-size: 13px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+      line-height: 1.4;
+      box-shadow: 0 10px 32px rgba(0, 0, 0, .5);
+      z-index: 20;
     }
     .toast[hidden] { display: none; }
   </style>
 </head>
 <body>
-  <div id="screens"></div>
 
-  <div id="cameraGrid"></div>
-
-  <div class="card">
-    <div class="channel">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M12 3 7 7H4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h3l5 4V3z"/>
-        <path d="M16.5 12a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM14 4.4v2.1c2.89 1.15 4.5 3.68 4.5 5.5 0 1.83-1.61 4.36-4.5 5.51v2.09c4-1.2 6.5-4.44 6.5-7.6S18 5.6 14 4.4z"/>
-      </svg>
-      <span>Sala de Voz</span>
-    </div>
-
-    <ul id="participants" class="participants"></ul>
-
-    <div id="joinWrap" class="join-wrap">
-      <button id="join" class="join-btn">Entrar na sala</button>
+  <!-- ---------------- Entrada ---------------- -->
+  <div id="lobby" class="lobby">
+    <div class="lobby-card">
+      <div class="lobby-icon">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 3 7 7H4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h3l5 4V3z"/>
+          <path d="M16.5 12a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM14 4.4v2.1c2.89 1.15 4.5 3.68 4.5 5.5 0 1.83-1.61 4.36-4.5 5.51v2.09c4-1.2 6.5-4.44 6.5-7.6S18 5.6 14 4.4z"/>
+        </svg>
+      </div>
+      <h1>Sala de Voz</h1>
+      <p class="sub">Áudio, câmera e compartilhamento de tela para todo mundo na mesma sala.</p>
+      <button id="join" class="btn-primary">Entrar na sala</button>
       <div id="hint" class="hint">Abra esta mesma página em outra aba ou dispositivo pra testar.</div>
     </div>
+  </div>
 
-    <div id="voiceBar" class="voice-bar" hidden>
-      <div class="voice-status">
-        <span class="dot"></span>
-        <div class="voice-status-text">
-          <div class="line1">Voz conectada</div>
-          <div id="voiceStatusDetail" class="line2">Sala de Voz</div>
-        </div>
+  <!-- ---------------- Sala ---------------- -->
+  <div id="room" class="room" hidden>
+    <div class="stage">
+      <div id="stageScreen" class="stage-screen" hidden>
+        <div id="screenBadge" class="screen-badge"></div>
       </div>
-      <div class="controls">
-        <button id="muteBtn" class="icon-btn" title="Mutar microfone">
-          <svg class="mic-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/>
-            <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 19 11z"/>
-            <line class="slash" x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:none"/>
-          </svg>
-        </button>
-        <button id="cameraBtn" class="icon-btn" title="Ligar câmera" disabled>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M4 6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-2.4l4.2 2.8A1 1 0 0 0 21 15.6V8.4a1 1 0 0 0-1.55-.84L15 10.4V8a2 2 0 0 0-2-2H4z"/>
-          </svg>
-        </button>
-        <button id="shareScreen" class="icon-btn" title="Compartilhar tela" disabled>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M4 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h5v2H7a1 1 0 1 0 0 2h10a1 1 0 1 0 0-2h-2v-2h5a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H4zm0 2h16v7H4V7z"/>
-            <path d="M12 8.3 9.4 11h1.8v2.6h1.6V11h1.8L12 8.3z"/>
-          </svg>
-        </button>
-        <button id="leaveBtn" class="icon-btn leave" title="Sair da sala">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 9c-4 0-7.5 1.5-10 4a1.5 1.5 0 0 0-.3 2l2.2 2.9a1.5 1.5 0 0 0 2.1.3l2-1.5a1.5 1.5 0 0 0 .5-1.8l-.6-1.6c.9-.3 2-.5 4.1-.5s3.2.2 4.1.5l-.6 1.6a1.5 1.5 0 0 0 .5 1.8l2 1.5a1.5 1.5 0 0 0 2.1-.3l2.2-2.9a1.5 1.5 0 0 0-.3-2c-2.5-2.5-6-4-10-4z"/>
-          </svg>
-        </button>
+      <div id="cameras" class="cameras grid"></div>
+    </div>
+
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-head">Na sala — <span id="peerCount">0</span></div>
+      <ul id="participants" class="participants"></ul>
+    </aside>
+  </div>
+
+  <!-- ---------------- Controles ---------------- -->
+  <div id="controlbar" class="controlbar" hidden>
+    <div class="cb-status">
+      <span class="dot"></span>
+      <div class="cb-status-text">
+        <div class="l1">Voz conectada</div>
+        <div class="l2" id="statusDetail">Sala de Voz</div>
       </div>
+    </div>
+
+    <div class="cb-controls">
+      <button id="muteBtn" class="icon-btn" title="Mutar microfone" aria-label="Mutar microfone">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/>
+          <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 19 11z"/>
+          <line class="slash" x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:none"/>
+        </svg>
+      </button>
+      <button id="cameraBtn" class="icon-btn" title="Ligar câmera" aria-label="Ligar câmera" disabled>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M4 6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-2.4l4.2 2.8A1 1 0 0 0 21 15.6V8.4a1 1 0 0 0-1.55-.84L15 10.4V8a2 2 0 0 0-2-2H4z"/>
+        </svg>
+      </button>
+      <button id="shareScreen" class="icon-btn" title="Compartilhar tela" aria-label="Compartilhar tela" disabled>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M4 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h5v2H7a1 1 0 1 0 0 2h10a1 1 0 1 0 0-2h-2v-2h5a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H4zm0 2h16v7H4V7z"/>
+          <path d="M12 8.3 9.4 11h1.8v2.6h1.6V11h1.8L12 8.3z"/>
+        </svg>
+      </button>
+      <button id="leaveBtn" class="icon-btn danger" title="Sair da sala" aria-label="Sair da sala">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 9c-4 0-7.5 1.5-10 4a1.5 1.5 0 0 0-.3 2l2.2 2.9a1.5 1.5 0 0 0 2.1.3l2-1.5a1.5 1.5 0 0 0 .5-1.8l-.6-1.6c.9-.3 2-.5 4.1-.5s3.2.2 4.1.5l-.6 1.6a1.5 1.5 0 0 0 .5 1.8l2 1.5a1.5 1.5 0 0 0 2.1-.3l2.2-2.9a1.5 1.5 0 0 0-.3-2c-2.5-2.5-6-4-10-4z"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="cb-right">
+      <button id="peopleBtn" class="icon-btn small active" title="Mostrar/ocultar participantes" aria-label="Mostrar ou ocultar participantes">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-3.3 0-6 1.8-6 4v2h12v-2c0-2.2-2.7-4-6-4zM17 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm4.5 8v-2c0-1.6-1.4-3-3.2-3.6 1.6.8 2.7 2.1 2.7 3.6v2h.5z"/>
+        </svg>
+      </button>
     </div>
   </div>
 
@@ -277,7 +441,6 @@
     'use strict';
 
     // ==================== CONFIGURAÇÃO DE QUALIDADE ====================
-    // Ajuste estes valores conforme sua necessidade.
     const CONFIG = {
       // Bitrate do áudio em bits por segundo.
       //   ~32000  = padrão do WebRTC (voz simples)
@@ -289,25 +452,27 @@
       // ganho automático) e usa estéreo. Use false para conversa/voz.
       musica: false,
 
-      // Compartilhamento de tela: teto de bitrate e resolução/fps máximos,
-      // pra não pesar demais na banda de quem está assistindo.
+      // Compartilhamento de tela: teto de bitrate e resolução/fps máximos.
       videoBitrate: 2_500_000, // ~2.5 Mbps: dá pra ler texto na tela com folga
       videoMaxWidth: 1920,
       videoMaxHeight: 1080,
       videoMaxFps: 30,
 
-      // Áudio da tela compartilhada (aba/sistema). Enquanto ninguém está
-      // compartilhando, o canal fica reservado num bitrate mínimo pra não
-      // gastar banda à toa.
+      // Áudio da tela compartilhada. Enquanto ninguém compartilha, o canal
+      // fica reservado num bitrate mínimo pra não gastar banda à toa.
       screenAudioBitrate: 128_000,
       screenAudioIdleBitrate: 6_000,
 
-      // Câmera: aparece em quadrados na grade acima da lista, então merece
-      // uma resolução um pouco melhor que uma miniatura.
-      cameraBitrate: 600_000,
-      cameraMaxWidth: 480,
-      cameraMaxHeight: 480,
+      // Câmera. 16:9 porque é o formato dos quadrados na grade — pedir 1:1
+      // fazia o navegador entregar uma imagem que era cortada na exibição.
+      cameraBitrate: 700_000,
+      cameraMaxWidth: 640,
+      cameraMaxHeight: 360,
       cameraMaxFps: 24,
+
+      // A partir de que volume (RMS de 0 a 1) alguém conta como "falando".
+      // ~0.01 pega sussurro e ruído de fundo; ~0.08 só pega voz alta.
+      limiarDeVoz: 0.03,
     };
     // ==================================================================
 
@@ -322,14 +487,19 @@
     const cameraBtn = document.getElementById('cameraBtn');
     const muteBtn = document.getElementById('muteBtn');
     const leaveBtn = document.getElementById('leaveBtn');
-    const joinWrapEl = document.getElementById('joinWrap');
-    const voiceBarEl = document.getElementById('voiceBar');
-    const voiceDetailEl = document.getElementById('voiceStatusDetail');
+    const peopleBtn = document.getElementById('peopleBtn');
+    const lobbyEl = document.getElementById('lobby');
+    const roomEl = document.getElementById('room');
+    const controlbarEl = document.getElementById('controlbar');
+    const statusDetailEl = document.getElementById('statusDetail');
     const hintEl = document.getElementById('hint');
     const participantsEl = document.getElementById('participants');
+    const peerCountEl = document.getElementById('peerCount');
+    const sidebarEl = document.getElementById('sidebar');
     const audiosEl = document.getElementById('audios');
-    const screensEl = document.getElementById('screens');
-    const cameraGridEl = document.getElementById('cameraGrid');
+    const stageScreenEl = document.getElementById('stageScreen');
+    const screenBadgeEl = document.getElementById('screenBadge');
+    const camerasEl = document.getElementById('cameras');
     const toastEl = document.getElementById('toast');
 
     const ICON_MIC = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.07A7 7 0 0 0 19 11z"/></svg>';
@@ -359,33 +529,33 @@
     let screenAudioTrack = null;
     let cameraTrack = null;
     let localCameraStream = null;
+    let localScreenStream = null;
 
     let micEnabled = true;
     let cameraOn = false;
     let sharingScreen = false;
     let awaitingShareGrant = false;
 
-    // Retrato da sala mandado pelo servidor. TODA a interface é desenhada a
-    // partir daqui: quem está na sala, quem está com câmera ligada e quem está
-    // compartilhando a tela. Como o servidor manda o retrato inteiro a cada
-    // mudança, quem entra depois vê exatamente o mesmo que quem já estava.
+    // Quem compartilha vê a própria tela numa miniatura; clicar nela abre no
+    // palco (e clicar de novo devolve pra miniatura), igual ao Discord. Começa
+    // recolhida de propósito: expandida, quem compartilha a tela inteira cai
+    // no efeito de espelho infinito.
+    let previaExpandida = false;
+
     let room = { peers: [], tracks: [], screenSharer: '' };
     let recebeuEstado = false;
     let watchdogEstado = null;
 
-    // Mídia que já chegou pelo WebRTC, por ID de track. O retrato da sala e o
-    // ontrack podem chegar em qualquer ordem — a interface só desenha o que
-    // aparece nos dois.
-    const mediaTracks = new Map();
-    const audioEls = new Map(); // trackId -> <audio>
-    const videoEls = new Map(); // trackId -> <video>
+    const mediaTracks = new Map(); // id da track -> MediaStreamTrack recebida
+    const audioEls = new Map();    // chave -> <audio>
+    const videoEls = new Map();    // chave -> <video>
 
     let toastTimer = null;
     function showToast(text) {
       toastEl.textContent = text;
       toastEl.hidden = false;
       clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => { toastEl.hidden = true; }, 4000);
+      toastTimer = setTimeout(() => { toastEl.hidden = true; }, 5000);
     }
 
     // O servidor fala outra versão do protocolo: esta página veio do cache do
@@ -399,9 +569,7 @@
       if (sessionStorage.getItem('recarregadoPorVersao') === versaoServidor) {
         hintEl.textContent = 'Esta página está desatualizada. Recarregue com Ctrl+Shift+R.';
         hintEl.classList.add('error');
-        joinWrapEl.hidden = false;
-        voiceBarEl.hidden = true;
-        joinBtn.disabled = false;
+        mostrarLobby();
         return;
       }
       sessionStorage.setItem('recarregadoPorVersao', versaoServidor);
@@ -414,13 +582,25 @@
       }
     }
 
+    function mostrarLobby() {
+      lobbyEl.hidden = false;
+      roomEl.hidden = true;
+      controlbarEl.hidden = true;
+      joinBtn.disabled = false;
+    }
+
+    function mostrarSala() {
+      lobbyEl.hidden = true;
+      roomEl.hidden = false;
+      controlbarEl.hidden = false;
+    }
+
     // ---- Entrar na sala ------------------------------------------------
     joinBtn.onclick = async () => {
       joinBtn.disabled = true;
       hintEl.textContent = 'Pedindo acesso ao microfone...';
       hintEl.classList.remove('error');
 
-      // Restrições de captura do microfone (qualidade da entrada).
       const audioConstraints = {
         echoCancellation: !CONFIG.musica,   // tira eco (bom pra voz)
         noiseSuppression: !CONFIG.musica,   // tira ruído de fundo (bom pra voz)
@@ -439,7 +619,6 @@
       }
       localAudioTrack = localStream.getAudioTracks()[0];
 
-      // Busca a config de STUN/TURN no servidor (credenciais ficam lá, não aqui).
       let iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
       try {
         const r = await fetch('/config');
@@ -456,16 +635,14 @@
       // é tela ou câmera.
       micSender = pc.addTrack(localAudioTrack, localStream);
 
-      // Canal do áudio da tela. Reservado com uma track silenciosa só pra
-      // existir um msid válido no SDP; a track real entra por replaceTrack.
       placeholderScreenAudio = criarTrackSilenciosa();
       if (placeholderScreenAudio) {
         screenAudioSender = pc.addTrack(placeholderScreenAudio, localStream);
       }
 
-      // Canais de vídeo (tela e câmera). O canvas com captureStream(0) não
-      // gera quadro nenhum sozinho, então o canal fica negociado e pronto sem
-      // gastar banda até alguém realmente ligar a câmera/compartilhar a tela.
+      // O canvas com captureStream(0) não gera quadro nenhum sozinho, então o
+      // canal fica negociado e pronto sem gastar banda até alguém ligar a
+      // câmera / compartilhar a tela.
       placeholderScreenVideo = criarTrackDeVideoVazia();
       screenVideoSender = pc.addTrack(placeholderScreenVideo, localStream);
       placeholderCamera = criarTrackDeVideoVazia();
@@ -503,14 +680,10 @@
       };
 
       ws.onopen = () => {
-        joinWrapEl.hidden = true;
-        voiceBarEl.hidden = false;
+        mostrarSala();
         cameraBtn.disabled = false;
         render();
 
-        // Se o retrato da sala não chegar, alguma coisa está errada entre o
-        // navegador e o servidor. Melhor dizer isso na cara do que deixar a
-        // sala "meio funcionando" em silêncio.
         clearTimeout(watchdogEstado);
         watchdogEstado = setTimeout(() => {
           if (!recebeuEstado) {
@@ -540,9 +713,10 @@
               return;
             }
             myPeerId = info.peerId;
-            // Versão bateu: libera a trava pra uma próxima atualização poder
-            // recarregar de novo quando for a vez dela.
             sessionStorage.removeItem('recarregadoPorVersao');
+            // Só aqui: o monitor precisa saber de quem é a voz que ele está
+            // ouvindo, e antes do welcome a gente ainda não sabe quem somos.
+            iniciarMonitorDeVoz();
             render();
             break;
           }
@@ -560,7 +734,7 @@
               if (!pc) return;
               await pc.setRemoteDescription(JSON.parse(m.data));
               const answer = await pc.createAnswer();
-              answer.sdp = ajustarOpus(answer.sdp); // liga FEC, bitrate e estéreo no Opus
+              answer.sdp = ajustarOpus(answer.sdp); // liga FEC e bitrate no Opus
               await pc.setLocalDescription(answer);
               send('answer', JSON.stringify(pc.localDescription));
               // Só depois da negociação o navegador aceita mexer nos
@@ -601,8 +775,9 @@
       if (!localAudioTrack) return;
       micEnabled = !micEnabled;
       localAudioTrack.enabled = micEnabled;
-      muteBtn.classList.toggle('muted-btn', !micEnabled);
+      muteBtn.classList.toggle('on', !micEnabled);
       muteBtn.title = micEnabled ? 'Mutar microfone' : 'Desmutar microfone';
+      muteBtn.setAttribute('aria-label', muteBtn.title);
       muteBtn.querySelector('.slash').style.display = micEnabled ? 'none' : 'block';
       send('mic-state', micEnabled ? 'live' : 'muted');
       render();
@@ -610,9 +785,7 @@
 
     // ---- Compartilhamento de tela --------------------------------------
     // Pedimos permissão ao servidor ANTES de capturar a tela. Assim, se outra
-    // pessoa chegou primeiro, nada é capturado nem transmitido — antes o
-    // navegador já estava enviando a tela quando descobria que fora recusado,
-    // e dois compartilhamentos acabavam no ar ao mesmo tempo.
+    // pessoa chegou primeiro, nada é capturado nem transmitido.
     shareBtn.onclick = async () => {
       if (sharingScreen) {
         await stopSharing();
@@ -624,9 +797,8 @@
       send('screenshare-request');
     };
 
-    // Pede a tela com áudio. Alguns navegadores (Firefox, por exemplo) recusam
-    // o pedido inteiro quando o áudio vem junto — nesse caso tentamos de novo
-    // só com a imagem, em vez de o compartilhamento simplesmente falhar.
+    // Alguns navegadores (Firefox) recusam o pedido inteiro quando o áudio vem
+    // junto — nesse caso tentamos de novo só com a imagem.
     async function capturarTela() {
       const video = {
         width: { max: CONFIG.videoMaxWidth },
@@ -647,8 +819,7 @@
       try {
         stream = await capturarTela();
       } catch (e) {
-        // Usuário cancelou o seletor: devolve a vez pra sala.
-        send('screenshare-stop');
+        send('screenshare-stop'); // usuário cancelou: devolve a vez pra sala
         render();
         return;
       }
@@ -659,7 +830,6 @@
       try {
         await screenVideoSender.replaceTrack(screenVideoTrack);
         setMaxBitrate(screenVideoSender, CONFIG.videoBitrate);
-
         if (screenAudioTrack && screenAudioSender) {
           await screenAudioSender.replaceTrack(screenAudioTrack);
           setMaxBitrate(screenAudioSender, CONFIG.screenAudioBitrate);
@@ -679,7 +849,9 @@
       // compartilhar" na barra do Chrome/Edge), avisamos a sala também.
       screenVideoTrack.onended = () => { stopSharing(); };
 
+      localScreenStream = stream;
       sharingScreen = true;
+      previaExpandida = false;
       render();
     }
 
@@ -692,6 +864,7 @@
       }
       sharingScreen = false;
       awaitingShareGrant = false;
+      previaExpandida = false;
 
       if (screenVideoTrack) screenVideoTrack.onended = null;
 
@@ -707,6 +880,7 @@
 
       if (screenVideoTrack) { screenVideoTrack.stop(); screenVideoTrack = null; }
       if (screenAudioTrack) { screenAudioTrack.stop(); screenAudioTrack = null; }
+      localScreenStream = null;
 
       send('screenshare-stop');
       render();
@@ -751,9 +925,7 @@
         return;
       }
 
-      // Se o dispositivo for desconectado no meio do caminho.
       cameraTrack.onended = () => { stopCamera(); };
-
       localCameraStream = camStream;
       cameraOn = true;
       cameraBtn.disabled = false;
@@ -778,6 +950,30 @@
       render();
     }
 
+    // ---- Painel de participantes ---------------------------------------
+    // Fica aberto em tela larga e fechado em tela estreita — mas assim que a
+    // pessoa mexe no botão, a escolha dela manda e a janela para de decidir.
+    let painelManual = false;
+    const mqEstreito = window.matchMedia('(max-width: 900px)');
+
+    function definirPainel(visivel) {
+      sidebarEl.hidden = !visivel;
+      peopleBtn.classList.toggle('active', visivel);
+    }
+    function ajustarPainel() {
+      if (!painelManual) definirPainel(!mqEstreito.matches);
+    }
+    peopleBtn.onclick = () => {
+      painelManual = true;
+      definirPainel(sidebarEl.hidden);
+      reajustarGrade();
+    };
+    if (mqEstreito.addEventListener) {
+      mqEstreito.addEventListener('change', () => { ajustarPainel(); reajustarGrade(); });
+    }
+    ajustarPainel();
+    window.addEventListener('resize', reajustarGrade);
+
     // ---- Sair ----------------------------------------------------------
     leaveBtn.onclick = () => leaveRoom();
 
@@ -787,19 +983,22 @@
       if (ws) { ws.onclose = null; ws.onerror = null; ws.onmessage = null; ws.close(); ws = null; }
       if (pc) { pc.onconnectionstatechange = null; pc.ontrack = null; pc.close(); pc = null; }
 
+      pararMonitorDeVoz();
+
       for (const t of [localAudioTrack, screenVideoTrack, screenAudioTrack, cameraTrack,
                        placeholderScreenAudio, placeholderScreenVideo, placeholderCamera]) {
-        if (t) t.stop();
+        if (t) { t.onended = null; t.stop(); }
       }
       if (localStream) localStream.getTracks().forEach(t => t.stop());
       if (localCameraStream) localCameraStream.getTracks().forEach(t => t.stop());
+      if (localScreenStream) localScreenStream.getTracks().forEach(t => t.stop());
       if (silentAudioCtx) { silentAudioCtx.close().catch(() => {}); silentAudioCtx = null; }
 
       localStream = localAudioTrack = null;
       screenVideoTrack = screenAudioTrack = cameraTrack = null;
       placeholderScreenAudio = placeholderScreenVideo = placeholderCamera = null;
       micSender = screenAudioSender = screenVideoSender = cameraSender = null;
-      localCameraStream = null;
+      localCameraStream = localScreenStream = null;
       myPeerId = null;
 
       for (const el of audioEls.values()) { el.srcObject = null; el.remove(); }
@@ -810,31 +1009,30 @@
       room = { peers: [], tracks: [], screenSharer: '' };
       recebeuEstado = false;
       clearTimeout(watchdogEstado);
-      ultimaGradeCameras = '';
+      ultimaGrade = '';
       telaAtual = '';
 
       audiosEl.innerHTML = '';
-      screensEl.innerHTML = '';
-      cameraGridEl.innerHTML = '';
+      camerasEl.innerHTML = '';
       participantsEl.innerHTML = '';
+      stageScreenEl.hidden = true;
 
       micEnabled = true;
       cameraOn = false;
       sharingScreen = false;
       awaitingShareGrant = false;
-      muteBtn.classList.remove('muted-btn');
+      previaExpandida = false;
+      muteBtn.classList.remove('on');
       muteBtn.title = 'Mutar microfone';
       muteBtn.querySelector('.slash').style.display = 'none';
       cameraBtn.classList.remove('active');
       cameraBtn.title = 'Ligar câmera';
       shareBtn.classList.remove('active');
       shareBtn.title = 'Compartilhar tela';
-
-      voiceBarEl.hidden = true;
-      joinWrapEl.hidden = false;
-      joinBtn.disabled = false;
       cameraBtn.disabled = true;
       shareBtn.disabled = true;
+
+      mostrarLobby();
       hintEl.textContent = 'Abra esta mesma página em outra aba ou dispositivo pra testar.';
       hintEl.classList.remove('error');
     }
@@ -850,13 +1048,11 @@
       sender.setParameters(params).catch(err => console.warn('setParameters:', err));
     }
 
-    // Reaplica os tetos de bitrate de todos os canais de acordo com o que
-    // cada um está transmitindo agora.
+    // Os canais de vídeo ociosos não gastam nada (o canvas placeholder não gera
+    // quadro), então o teto pode ficar sempre no valor final. Já o canal de
+    // áudio da tela transmite silêncio enquanto está reservado — esse fica num
+    // teto mínimo até virar áudio de verdade.
     function aplicarBitrates() {
-      // Os canais de vídeo ociosos não gastam nada (o canvas placeholder não
-      // gera quadro), então o teto pode ficar sempre no valor final. Já o
-      // canal de áudio da tela transmite silêncio enquanto está reservado —
-      // esse sim fica num teto mínimo até virar áudio de verdade.
       setMaxBitrate(micSender, CONFIG.bitrate);
       setMaxBitrate(screenVideoSender, CONFIG.videoBitrate);
       setMaxBitrate(cameraSender, CONFIG.cameraBitrate);
@@ -886,13 +1082,9 @@
       }
     }
 
-    // Ajusta os parâmetros do codec Opus diretamente no SDP:
-    // - useinbandfec=1  -> correção de erros (aguenta melhor perda de pacotes)
-    // - maxaveragebitrate -> teto de bitrate
-    // - stereo / maxplaybackrate -> qualidade máxima (modo música)
-    //
-    // Com várias pessoas na sala o SDP tem VÁRIAS m-lines de áudio (uma por
-    // participante); a versão anterior só ajustava a primeira.
+    // Ajusta os parâmetros do codec Opus no SDP (FEC, teto de bitrate e, no
+    // modo música, estéreo). Com várias pessoas na sala o SDP tem VÁRIAS
+    // m-lines de áudio — uma por participante.
     function ajustarOpus(sdp) {
       if (!sdp) return sdp;
       const eol = sdp.includes('\r\n') ? '\r\n' : '\n';
@@ -908,7 +1100,6 @@
       let extras = `useinbandfec=1;maxaveragebitrate=${CONFIG.bitrate}`;
       if (CONFIG.musica) extras += ';stereo=1;sprop-stereo=1;maxplaybackrate=48000';
 
-      // 1ª passada: acrescenta os parâmetros nas linhas fmtp que já existem.
       const comFmtp = new Set();
       const parcial = lines.map(line => {
         const m = line.match(/^a=fmtp:(\d+) (.*)$/);
@@ -919,7 +1110,6 @@
         return line;
       });
 
-      // 2ª passada: cria a linha fmtp pros payload types que não tinham uma.
       const out = [];
       for (const line of parcial) {
         out.push(line);
@@ -931,15 +1121,35 @@
       return out.join(eol);
     }
 
+    // ---- Localização da mídia -------------------------------------------
+    function infoDe(peerId, kind) {
+      return room.tracks.find(t => t.peerId === peerId && t.kind === kind) || null;
+    }
+
+    // O caminho bom é pelo mid (a m-line): ele sempre aponta pro lugar certo.
+    // O id da track NÃO serve sozinho — o navegador fixa receiver.track.id
+    // quando cria a transceiver e não atualiza se o servidor reaproveitar
+    // aquela m-line pra outra mídia depois. O id fica só como reserva pra
+    // quando o mid ainda não foi negociado deste lado.
+    function mediaDe(info) {
+      if (!info) return null;
+      if (info.mid && pc) {
+        const tr = pc.getTransceivers().find(t => t.mid === info.mid);
+        if (tr && tr.receiver && tr.receiver.track) return tr.receiver.track;
+      }
+      return mediaTracks.get(info.id) || null;
+    }
+
+    function chaveDe(info) {
+      return info.mid ? 'mid:' + info.mid : 'id:' + info.id;
+    }
+
     // ---- Interface ------------------------------------------------------
-    // Tudo é desenhado a partir do retrato da sala (room) cruzado com a mídia
-    // que já chegou (mediaTracks). Como as duas coisas podem chegar em
-    // qualquer ordem, render() é chamado nos dois casos e sempre converge.
     // Cada parte é isolada: se uma quebrar, as outras continuam. Sem isso, um
     // erro em qualquer canto derrubaria a tela inteira (inclusive o áudio, que
     // é montado aqui) sem deixar rastro além do console.
     function render() {
-      for (const parte of [renderParticipants, syncAudio, renderCameras, renderScreen, renderControls]) {
+      for (const parte of [renderParticipants, syncAudio, renderStage, renderControls]) {
         try {
           parte();
         } catch (e) {
@@ -953,78 +1163,54 @@
     }
 
     function rotulo(peerId) {
-      const outros = outrosParticipantes();
-      const i = outros.findIndex(p => p.peerId === peerId);
+      if (peerId === myPeerId) return 'Você';
+      const i = outrosParticipantes().findIndex(p => p.peerId === peerId);
       return i < 0 ? 'Participante' : `Participante ${i + 1}`;
     }
 
-    function infoDe(peerId, kind) {
-      return room.tracks.find(t => t.peerId === peerId && t.kind === kind) || null;
-    }
-
-    // Acha a mídia que está chegando para um item do retrato da sala.
-    //
-    // O caminho bom é pelo mid (a m-line): ele sempre aponta pro lugar certo.
-    // O id da track NÃO serve sozinho — o navegador fixa receiver.track.id
-    // quando cria a transceiver e não atualiza se o servidor reaproveitar
-    // aquela m-line pra outra mídia depois; era assim que o microfone de um
-    // participante simplesmente não tocava. O id fica só como reserva pra
-    // quando o mid ainda não foi negociado deste lado.
-    function mediaDe(info) {
-      if (!info) return null;
-      if (info.mid && pc) {
-        const tr = pc.getTransceivers().find(t => t.mid === info.mid);
-        if (tr && tr.receiver && tr.receiver.track) return tr.receiver.track;
-      }
-      return mediaTracks.get(info.id) || null;
-    }
-
-    // Chave estável de cache dos elementos <audio>/<video>. Segue o mid quando
-    // existe, porque é ele que define de onde a mídia vem.
-    function chaveDe(info) {
-      return info.mid ? 'mid:' + info.mid : 'id:' + info.id;
+    // Lista de participantes com "Você" sempre em primeiro.
+    function participantesOrdenados() {
+      const eu = room.peers.find(p => p.peerId === myPeerId);
+      const base = eu ? [eu] : [{ peerId: myPeerId, muted: !micEnabled, cameraOn }];
+      return base.concat(outrosParticipantes());
     }
 
     function renderParticipants() {
       participantsEl.innerHTML = '';
       if (!ws) return;
 
-      participantsEl.appendChild(participantRow('Você', 'V', {
-        muted: !micEnabled,
-        cameraOn,
-        sharing: !!myPeerId && room.screenSharer === myPeerId,
-      }));
+      const lista = participantesOrdenados();
+      peerCountEl.textContent = String(lista.length);
 
-      for (const p of outrosParticipantes()) {
-        participantsEl.appendChild(participantRow(rotulo(p.peerId), 'P', {
-          muted: p.muted,
-          cameraOn: p.cameraOn,
-          sharing: room.screenSharer === p.peerId,
-        }));
+      for (const p of lista) {
+        const meu = p.peerId === myPeerId;
+        const li = document.createElement('li');
+        li.className = 'participant' + (meu ? ' self' : '');
+        li.dataset.peer = p.peerId || 'eu';
+
+        const avatar = document.createElement('span');
+        avatar.className = 'avatar';
+        avatar.textContent = meu ? 'V' : 'P';
+
+        const nome = document.createElement('span');
+        nome.className = 'pname';
+        nome.textContent = rotulo(p.peerId); // textContent: nada aqui vira HTML
+
+        const badges = document.createElement('span');
+        badges.className = 'badges';
+        if (room.screenSharer && room.screenSharer === p.peerId) {
+          badges.appendChild(badge(ICON_SCREEN, 'on', 'Compartilhando a tela'));
+        }
+        const comCamera = meu ? cameraOn : p.cameraOn;
+        if (comCamera) badges.appendChild(badge(ICON_CAM, 'on', 'Câmera ligada'));
+        const mudo = meu ? !micEnabled : p.muted;
+        badges.appendChild(badge(mudo ? ICON_MIC_MUTED : ICON_MIC, mudo ? 'muted' : '',
+          mudo ? 'Microfone mutado' : 'Microfone ligado'));
+
+        li.append(avatar, nome, badges);
+        participantsEl.appendChild(li);
       }
-    }
-
-    function participantRow(name, initial, flags) {
-      const li = document.createElement('li');
-      li.className = 'participant' + (initial === 'V' ? ' self' : '');
-
-      const avatar = document.createElement('span');
-      avatar.className = 'avatar';
-      avatar.textContent = initial;
-
-      const pname = document.createElement('span');
-      pname.className = 'pname';
-      pname.textContent = name; // textContent: nada aqui vira HTML
-
-      const badges = document.createElement('span');
-      badges.className = 'badges';
-      if (flags.sharing) badges.appendChild(badge(ICON_SCREEN, 'on', 'Compartilhando a tela'));
-      if (flags.cameraOn) badges.appendChild(badge(ICON_CAM, 'on', 'Câmera ligada'));
-      badges.appendChild(badge(flags.muted ? ICON_MIC_MUTED : ICON_MIC,
-        flags.muted ? 'muted' : '', flags.muted ? 'Microfone mutado' : 'Microfone ligado'));
-
-      li.append(avatar, pname, badges);
-      return li;
+      aplicarFalando();
     }
 
     function badge(svg, extraClass, title) {
@@ -1035,9 +1221,201 @@
       return el;
     }
 
-    // Cria (ou reaproveita) o <video> de uma track. Reaproveitar importa: se a
-    // gente recriasse o elemento a cada render, o vídeo piscava a cada mudança
-    // na sala.
+    // Toca o microfone de todo mundo, e o áudio da tela de quem estiver
+    // compartilhando. Reconcilia: cria o que falta, remove o que saiu.
+    function syncAudio() {
+      const querido = new Map();
+      for (const t of room.tracks) {
+        if (t.peerId === myPeerId) continue;
+        const isMic = t.kind === 'mic';
+        const isScreenAudio = t.kind === 'screen-audio' && room.screenSharer === t.peerId;
+        if (!isMic && !isScreenAudio) continue;
+        const media = mediaDe(t);
+        if (media) querido.set(chaveDe(t), { media, peerId: t.peerId, isMic });
+      }
+
+      for (const [chave, el] of [...audioEls]) {
+        if (!querido.has(chave)) {
+          el.srcObject = null;
+          el.remove();
+          audioEls.delete(chave);
+          pararMonitor(chave);
+        }
+      }
+      for (const [chave, item] of querido) {
+        let el = audioEls.get(chave);
+        if (!el) {
+          el = document.createElement('audio');
+          el.autoplay = true;
+          audiosEl.appendChild(el);
+          audioEls.set(chave, el);
+        }
+        if (!el.srcObject || el.srcObject.getTracks()[0] !== item.media) {
+          el.srcObject = new MediaStream([item.media]);
+          el.play().catch(() => {});
+          pararMonitor(chave);
+        }
+        // Fora do if de propósito: monitorarVoz é idempotente, e assim o
+        // analisador é criado mesmo que o áudio tenha chegado antes de o
+        // monitor existir.
+        if (item.isMic) monitorarVoz(chave, item.peerId, item.media);
+      }
+    }
+
+    // Quem aparece no palco: a tela de outra pessoa entra sozinha; a minha
+    // própria só quando eu clico na miniatura pra expandir.
+    function telaNoPalco() {
+      if (room.screenSharer && room.screenSharer !== myPeerId) {
+        const info = infoDe(room.screenSharer, 'screen');
+        const media = mediaDe(info);
+        if (media) return { chave: chaveDe(info), media, dono: room.screenSharer, propria: false };
+      }
+      if (sharingScreen && previaExpandida && screenVideoTrack) {
+        return { chave: 'local-screen', media: screenVideoTrack, dono: myPeerId, propria: true };
+      }
+      return null;
+    }
+
+    let telaAtual = '';
+    let ultimaGrade = '';
+
+    function renderStage() {
+      if (!ws) return;
+      const tela = telaNoPalco();
+
+      // --- palco ---
+      const chaveTela = tela ? tela.chave : '';
+      if (chaveTela !== telaAtual) {
+        telaAtual = chaveTela;
+        [...stageScreenEl.querySelectorAll('video')].forEach(v => v.remove());
+        if (tela) {
+          const el = videoDe(tela.chave, tela.media, false);
+          if (el) stageScreenEl.insertBefore(el, screenBadgeEl);
+        }
+      }
+      stageScreenEl.hidden = !tela;
+      if (tela) {
+        screenBadgeEl.textContent = tela.propria
+          ? 'Sua tela (prévia) — clique para recolher'
+          : 'Tela de ' + rotulo(tela.dono);
+        stageScreenEl.style.cursor = tela.propria ? 'pointer' : '';
+      }
+
+      // --- câmeras ---
+      // Um quadro por pessoa, sempre: com vídeo se a câmera estiver ligada, com
+      // avatar se não. Assim a grade nunca fica vazia e as posições não pulam
+      // quando alguém liga ou desliga a câmera.
+      const itens = [];
+      if (sharingScreen && screenVideoTrack && !previaExpandida) {
+        itens.push({ chave: 'local-screen', media: screenVideoTrack, label: 'Sua tela',
+                     tipo: 'tela', peerId: myPeerId });
+      }
+      for (const p of participantesOrdenados()) {
+        const meu = p.peerId === myPeerId;
+        const media = meu
+          ? (cameraOn && localCameraStream ? localCameraStream.getVideoTracks()[0] : null)
+          : (p.cameraOn ? mediaDe(infoDe(p.peerId, 'cam')) : null);
+        itens.push({
+          chave: meu ? 'local-cam' : 'cam:' + p.peerId,
+          media: media || null,
+          label: rotulo(p.peerId),
+          tipo: meu ? 'eu' : 'peer',
+          peerId: p.peerId,
+          mudo: meu ? !micEnabled : p.muted,
+        });
+      }
+
+      const modoFaixa = !!tela;
+      const assinatura = (modoFaixa ? 'faixa|' : 'grade|') +
+        itens.map(i => `${i.chave}:${i.label}:${i.media ? 1 : 0}:${i.mudo ? 1 : 0}`).join('|');
+      if (assinatura !== ultimaGrade) {
+        ultimaGrade = assinatura;
+        camerasEl.innerHTML = '';
+        camerasEl.classList.toggle('grid', !modoFaixa);
+        camerasEl.classList.toggle('strip', modoFaixa);
+        for (const item of itens) camerasEl.appendChild(montarTile(item));
+      }
+      qtdNaGrade = itens.length;
+      reajustarGrade();
+      podarVideos();
+      aplicarFalando();
+    }
+
+    // Distribui os quadros no espaço que existe agora, levando em conta o
+    // formato da janela. Uma regra fixa ("3 lado a lado") desperdiça metade da
+    // altura numa tela larga e espreme tudo numa estreita.
+    //
+    // Não dá pra simplesmente escolher o arranjo que deixa cada quadro MAIOR:
+    // com duas pessoas numa janela deitada, empilhar em coluna dá quadros
+    // maiores, mas fica estranho — o esperado é um do lado do outro. A conta
+    // abaixo é a mesma do Meet/Jitsi: distribui as pessoas na proporção da
+    // caixa, então uma janela larga ganha colunas e uma alta ganha linhas.
+    let qtdNaGrade = 0;
+    const GAP_GRADE = 12;
+    const ASPECTO_TILE = 16 / 9;
+
+    function reajustarGrade() {
+      if (!camerasEl.classList.contains('grid')) return;
+
+      const n = qtdNaGrade;
+      const larguraDisp = camerasEl.clientWidth;
+      const alturaDisp = camerasEl.clientHeight;
+      if (!n || larguraDisp <= 0 || alturaDisp <= 0) return;
+
+      const aspectoCaixa = larguraDisp / alturaDisp;
+      const cols = Math.max(1, Math.min(n, Math.ceil(Math.sqrt(n * aspectoCaixa / ASPECTO_TILE))));
+      const linhas = Math.ceil(n / cols);
+
+      // Dentro do arranjo escolhido, o quadro cresce até bater no limite da
+      // largura ou da altura — o que vier primeiro.
+      const porLargura = (larguraDisp - GAP_GRADE * (cols - 1)) / cols;
+      const porAltura = (alturaDisp - GAP_GRADE * (linhas - 1)) / linhas * ASPECTO_TILE;
+      const largura = Math.floor(Math.min(porLargura, porAltura));
+      if (largura <= 0) return;
+
+      camerasEl.style.setProperty('--tile-w', largura + 'px');
+    }
+
+    function montarTile(item) {
+      const tile = document.createElement('div');
+      tile.className = 'tile' + (item.tipo === 'eu' ? ' self' : '') +
+                       (item.tipo === 'tela' ? ' tela' : '');
+      if (item.peerId) tile.dataset.peer = item.peerId;
+
+      if (item.media) {
+        const espelhar = item.tipo === 'eu'; // só a sua própria câmera
+        const el = videoDe(item.chave, item.media, espelhar);
+        if (el) tile.appendChild(el);
+      } else {
+        const holder = document.createElement('div');
+        holder.className = 'tile-avatar';
+        const bolha = document.createElement('span');
+        bolha.textContent = item.tipo === 'eu' ? 'V' : 'P';
+        holder.appendChild(bolha);
+        tile.appendChild(holder);
+      }
+
+      const label = document.createElement('span');
+      label.className = 'tile-label';
+      const texto = document.createElement('span');
+      texto.textContent = item.label;
+      label.appendChild(texto);
+      if (item.mudo) {
+        const mic = document.createElement('span');
+        mic.className = 'mic-off';
+        mic.title = 'Microfone mutado';
+        mic.innerHTML = ICON_MIC_MUTED;
+        label.appendChild(mic);
+      }
+      tile.appendChild(label);
+
+      if (item.tipo === 'tela') {
+        tile.title = 'Clique para ver sua tela em tamanho grande';
+        tile.onclick = () => { previaExpandida = true; render(); };
+      }
+      return tile;
+    }
+
     function videoDe(chave, media, mirror) {
       if (!media) return null;
       let el = videoEls.get(chave);
@@ -1058,126 +1436,19 @@
       return el;
     }
 
-    // Toca o microfone de todo mundo, e o áudio da tela de quem estiver
-    // compartilhando. Reconcilia: cria o que falta, remove o que saiu.
-    function syncAudio() {
-      const querido = new Map();
-      for (const t of room.tracks) {
-        if (t.peerId === myPeerId) continue;
-        const isMic = t.kind === 'mic';
-        const isScreenAudio = t.kind === 'screen-audio' && room.screenSharer === t.peerId;
-        if (!isMic && !isScreenAudio) continue;
-        const media = mediaDe(t);
-        if (media) querido.set(chaveDe(t), media);
-      }
-
-      for (const [chave, el] of [...audioEls]) {
-        if (!querido.has(chave)) {
-          el.srcObject = null;
-          el.remove();
-          audioEls.delete(chave);
-        }
-      }
-      for (const [chave, media] of querido) {
-        let el = audioEls.get(chave);
-        if (!el) {
-          el = document.createElement('audio');
-          el.autoplay = true;
-          audiosEl.appendChild(el);
-          audioEls.set(chave, el);
-        }
-        if (!el.srcObject || el.srcObject.getTracks()[0] !== media) {
-          el.srcObject = new MediaStream([media]);
-          el.play().catch(() => {});
-        }
-      }
-    }
-
-    let ultimaGradeCameras = '';
-    function renderCameras() {
-      const itens = [];
-      if (cameraOn && localCameraStream) itens.push({ key: 'local', label: 'Você' });
-      for (const p of outrosParticipantes()) {
-        if (!p.cameraOn) continue;
-        const info = infoDe(p.peerId, 'cam');
-        const media = mediaDe(info);
-        if (!media) continue; // ainda não chegou a mídia dessa câmera
-        itens.push({ key: chaveDe(info), media, label: rotulo(p.peerId) });
-      }
-
-      const assinatura = itens.map(i => i.key + '=' + i.label).join('|');
-      if (assinatura === ultimaGradeCameras) return;
-      ultimaGradeCameras = assinatura;
-
-      cameraGridEl.innerHTML = '';
-      for (const item of itens) {
-        let el;
-        if (item.key === 'local') {
-          el = videoEls.get('local');
-          if (!el) {
-            el = document.createElement('video');
-            el.autoplay = true;
-            el.playsInline = true;
-            el.muted = true;
-            videoEls.set('local', el);
-          }
-          if (el.srcObject !== localCameraStream) {
-            el.srcObject = localCameraStream;
-            el.play().catch(() => {});
-          }
-          el.classList.add('mirror');
-        } else {
-          el = videoDe(item.key, item.media, false);
-        }
-        if (el) cameraGridEl.appendChild(cameraTile(el, item.label));
-      }
-      podarVideos();
-    }
-
-    function cameraTile(videoEl, label) {
-      const tile = document.createElement('div');
-      tile.className = 'camera-tile';
-      tile.appendChild(videoEl);
-      const labelEl = document.createElement('span');
-      labelEl.className = 'tile-label';
-      labelEl.textContent = label;
-      tile.appendChild(labelEl);
-      return tile;
-    }
-
-    let telaAtual = '';
-    function renderScreen() {
-      // Só mostramos a tela de OUTRA pessoa — ver a própria tela dentro da
-      // própria tela vira aquele efeito de espelho infinito.
-      let chave = '';
-      let media = null;
-      if (room.screenSharer && room.screenSharer !== myPeerId) {
-        const info = infoDe(room.screenSharer, 'screen');
-        media = mediaDe(info);
-        if (media) chave = chaveDe(info);
-      }
-      if (chave === telaAtual) return;
-      telaAtual = chave;
-
-      screensEl.innerHTML = '';
-      if (chave) {
-        const el = videoDe(chave, media, false);
-        if (el) screensEl.appendChild(el);
-      }
-      podarVideos();
-    }
-
-    // Solta os <video> de tracks que não existem mais na sala (a pessoa saiu,
-    // ou parou de publicar aquela mídia).
+    // Solta os <video> que não estão mais em uso.
     function podarVideos() {
-      const vivas = new Set(room.tracks.map(chaveDe));
       for (const [chave, el] of [...videoEls]) {
-        if (chave === 'local' || vivas.has(chave)) continue;
+        if (el.isConnected) continue;
         el.srcObject = null;
-        el.remove();
         videoEls.delete(chave);
       }
     }
+
+    // Clicar na tela expandida devolve pra miniatura.
+    stageScreenEl.onclick = () => {
+      if (previaExpandida) { previaExpandida = false; render(); }
+    };
 
     function renderControls() {
       if (!ws) return;
@@ -1187,18 +1458,120 @@
       shareBtn.classList.toggle('active', sharingScreen);
       shareBtn.title = sharingScreen ? 'Parar compartilhamento'
         : outroCompartilhando ? 'Outra pessoa está compartilhando' : 'Compartilhar tela';
+      shareBtn.setAttribute('aria-label', shareBtn.title);
 
       cameraBtn.classList.toggle('active', cameraOn);
       cameraBtn.title = cameraOn ? 'Desligar câmera' : 'Ligar câmera';
+      cameraBtn.setAttribute('aria-label', cameraBtn.title);
 
       if (sharingScreen) {
-        voiceDetailEl.textContent = screenAudioTrack
+        statusDetailEl.textContent = screenAudioTrack
           ? 'Você está compartilhando a tela (com áudio)'
           : 'Você está compartilhando a tela';
       } else if (outroCompartilhando) {
-        voiceDetailEl.textContent = rotulo(room.screenSharer) + ' está compartilhando a tela';
+        statusDetailEl.textContent = rotulo(room.screenSharer) + ' está compartilhando a tela';
       } else {
-        voiceDetailEl.textContent = 'Sala de Voz';
+        const n = room.peers.length || 1;
+        statusDetailEl.textContent = n === 1 ? 'Você está sozinho por enquanto'
+          : `${n} pessoas na sala`;
+      }
+    }
+
+    // ---- Quem está falando ----------------------------------------------
+    // Um analisador por microfone. É só pra acender a borda verde no quadro e
+    // no avatar — nada disso mexe no áudio que toca.
+    let vozCtx = null;
+    let vozTimer = null;
+    const analisadores = new Map(); // chave do áudio -> {src, an, dados, peerId}
+    const falando = new Set();      // peerIds falando agora
+    const ultimaVoz = new Map();    // peerId -> quando passou do limiar pela última vez
+    const SEGURA_MS = 400;          // mantém aceso um pouco depois da última sílaba
+
+    function iniciarMonitorDeVoz() {
+      pararMonitorDeVoz();
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        vozCtx = new AudioCtx();
+        if (localAudioTrack) monitorarVoz('local', myPeerId, localAudioTrack);
+        vozTimer = setInterval(tickVoz, 160);
+      } catch (e) {
+        console.warn('sem indicador de quem está falando:', e);
+      }
+    }
+
+    function pararMonitorDeVoz() {
+      clearInterval(vozTimer);
+      vozTimer = null;
+      for (const chave of [...analisadores.keys()]) pararMonitor(chave);
+      falando.clear();
+      ultimaVoz.clear();
+      if (vozCtx) { vozCtx.close().catch(() => {}); vozCtx = null; }
+    }
+
+    function monitorarVoz(chave, peerId, track) {
+      if (!vozCtx || analisadores.has(chave) || !track) return;
+      try {
+        const src = vozCtx.createMediaStreamSource(new MediaStream([track]));
+        const an = vozCtx.createAnalyser();
+        an.fftSize = 512;
+        src.connect(an);
+        // Domínio do tempo (não frequência): mede o volume de verdade. A média
+        // do espectro dilui a energia da voz entre centenas de faixas e quase
+        // nunca cruzava o limiar.
+        analisadores.set(chave, { src, an, dados: new Uint8Array(an.fftSize), peerId });
+      } catch (e) {
+        console.warn('analisador de voz:', e);
+      }
+    }
+
+    function pararMonitor(chave) {
+      const a = analisadores.get(chave);
+      if (!a) return;
+      try { a.src.disconnect(); a.an.disconnect(); } catch (e) { /* já desconectado */ }
+      analisadores.delete(chave);
+      if (![...analisadores.values()].some(o => o.peerId === a.peerId)) falando.delete(a.peerId);
+    }
+
+    function tickVoz() {
+      const agora = Date.now();
+      for (const a of analisadores.values()) {
+        a.an.getByteTimeDomainData(a.dados);
+        let soma = 0;
+        for (let i = 0; i < a.dados.length; i++) {
+          const desvio = (a.dados[i] - 128) / 128; // amostras vêm centradas em 128
+          soma += desvio * desvio;
+        }
+        if (Math.sqrt(soma / a.dados.length) > CONFIG.limiarDeVoz) {
+          ultimaVoz.set(a.peerId, agora);
+        }
+      }
+
+      const novo = new Set();
+      for (const a of analisadores.values()) {
+        const quando = ultimaVoz.get(a.peerId);
+        if (quando && agora - quando < SEGURA_MS) novo.add(a.peerId);
+      }
+      // O microfone local mudo nunca acende, mesmo que o analisador ainda pegue
+      // algo antes do enabled=false surtir efeito.
+      if (!micEnabled) novo.delete(myPeerId);
+
+      let mudou = novo.size !== falando.size;
+      if (!mudou) {
+        for (const id of novo) if (!falando.has(id)) { mudou = true; break; }
+      }
+      if (!mudou) return;
+
+      falando.clear();
+      for (const id of novo) falando.add(id);
+      aplicarFalando();
+    }
+
+    // Só troca classes — não refaz a interface, senão o vídeo piscaria a cada
+    // vez que alguém começa ou para de falar.
+    function aplicarFalando() {
+      for (const el of document.querySelectorAll('[data-peer]')) {
+        el.classList.toggle('falando', falando.has(el.dataset.peer));
       }
     }
   </script>

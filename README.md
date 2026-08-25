@@ -15,6 +15,27 @@ funciona: ninguém se conecta direto com ninguém, tudo passa pelo servidor.
   do sistema no seletor, ele vai junto com a imagem.
 - 🔇 **Indicadores na lista**: quem está mutado, com câmera ligada e
   compartilhando a tela.
+- 🟢 **Quem está falando**: o quadro da pessoa e o avatar dela na lista ganham
+  uma borda verde enquanto ela fala.
+
+## A interface
+
+A tela é dividida em palco, painel de participantes e barra de controles — a
+página em si nunca rola.
+
+- **Sem ninguém compartilhando**: o palco é uma grade com um quadro por pessoa,
+  sempre (com a câmera se estiver ligada, com o avatar se não). O número de
+  colunas é calculado a partir do formato da janela, e a última linha, quando
+  fica incompleta, aparece centralizada.
+- **Com alguém compartilhando**: a tela vai para o palco no tamanho máximo que
+  couber, respeitando a proporção original, e as câmeras descem para uma faixa
+  fina embaixo.
+- **Quem está compartilhando** vê a própria tela numa miniatura "Sua tela" ao
+  lado das câmeras. Clicar nela abre no palco; clicar de novo recolhe. Começa
+  recolhida de propósito: expandida, quem compartilha a tela inteira cai no
+  efeito de espelho infinito.
+- O painel de participantes abre e fecha pelo botão à direita da barra, e já
+  começa fechado em telas estreitas.
 
 ## O que tem aqui
 
