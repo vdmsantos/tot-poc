@@ -1,0 +1,11 @@
+# Binários compilados do servidor
+voz
+voz.exe
+voz-server
+voz-server.exe
+*.exe
+*.test
+
+# Arquivos locais
+.env
+.DS_Store

@@ -1,4 +1,7 @@
-voz-server
-*.zip
 .git
+.gitignore
 README.md
+*.zip
+*.exe
+voz
+voz-server

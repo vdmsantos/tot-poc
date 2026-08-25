@@ -1,41 +1,47 @@
-# Sala de Voz — SFU de áudio em Go (estilo Discord)
+# Sala de Voz — SFU de áudio e vídeo em Go (estilo Discord)
 
-Servidor central (SFU) que recebe o áudio de cada participante e reencaminha
-para os demais da sala. É assim que o Discord funciona: ninguém se conecta
-direto com ninguém, tudo passa pelo servidor.
+Servidor central (SFU) que recebe o microfone, a câmera e a tela de cada
+participante e reencaminha para os demais da sala. É assim que o Discord
+funciona: ninguém se conecta direto com ninguém, tudo passa pelo servidor.
 
 ## Funcionalidades
 
 - 🎙️ **Áudio em grupo** (SFU): todo mundo ouve todo mundo, servidor no meio.
-- 🖥️ **Compartilhamento de tela**: qualquer participante pode compartilhar a
-  tela para os demais. Só uma pessoa por vez — o botão fica desabilitado para
-  os outros enquanto alguém está compartilhando.
+- 📷 **Câmera**: várias pessoas podem ligar ao mesmo tempo; cada uma vira um
+  quadrado na grade, incluindo a sua própria.
+- 🖥️ **Compartilhamento de tela**: uma pessoa por vez. Quem pede primeiro leva —
+  o pedido é aprovado pelo servidor **antes** de o navegador capturar a tela.
+- 🔊 **Áudio da tela compartilhada**: se o navegador oferecer o áudio da aba ou
+  do sistema no seletor, ele vai junto com a imagem.
+- 🔇 **Indicadores na lista**: quem está mutado, com câmera ligada e
+  compartilhando a tela.
 
 ## O que tem aqui
 
 ```
-voz/
+tot-poc/
 ├── main.go          # servidor: sinalização (WebSocket) + SFU (Pion WebRTC)
+├── main_test.go     # testes de integração (3 participantes de verdade)
 ├── go.mod           # dependências
 ├── web/
-│   └── index.html   # cliente: captura o microfone e conecta
+│   └── index.html   # cliente: captura mídia e conecta
+├── Dockerfile
 └── README.md
 ```
 
 ## Como rodar
 
-Você precisa do Go instalado (1.21+). No terminal, dentro da pasta `voz`:
+Você precisa do Go instalado (1.24+). No terminal, dentro da pasta do projeto:
 
 ```bash
-go mod tidy      # baixa as dependências (Pion e gorilla/websocket)
+go mod tidy
+```
+
+```bash
 go run .
 ```
 
-Vai aparecer:
-
-```
-Sala de voz rodando em http://localhost:8080
-```
+Vai aparecer `Sala de voz rodando na porta 8080`.
 
 ## Como testar
 
@@ -44,25 +50,69 @@ Sala de voz rodando em http://localhost:8080
 3. Abra a **mesma URL em outra aba** (ou em outro computador na mesma rede,
    trocando `localhost` pelo IP da máquina) e clique em Entrar também.
 4. Fale em um lado — você ouve no outro. 🎧
-5. Clique em **Compartilhar tela** em uma das abas e escolha uma tela/janela —
-   ela aparece na outra aba automaticamente.
+5. Ligue a câmera e/ou compartilhe a tela em qualquer uma das abas.
 
-> Dica: use fones de ouvido nos dois lados para não dar microfonia (eco).
+> Dica: use fones de ouvido em todos os lados para não dar microfonia (eco).
+
+### Testes automatizados
+
+```bash
+go test ./...
+```
+
+Os testes sobem o SFU de verdade e conectam três participantes reais (o Pion
+faz o papel do navegador), cobrindo o cenário completo: três pessoas na sala,
+todas com câmera ligada e uma compartilhando tela com áudio. Também cobrem a
+exclusividade do compartilhamento de tela e a limpeza da mídia de quem sai.
 
 ## Como funciona (resumo)
 
-- O **navegador** captura o microfone (`getUserMedia`) e abre uma conexão
-  WebRTC com o servidor, enviando seu áudio.
-- O **servidor** (Pion) recebe esse áudio como uma "track" e o guarda.
-- Sempre que alguém entra ou sai, o servidor **renegocia** com todos e passa a
-  reenviar para cada pessoa o áudio de todas as outras.
-- A **sinalização** (troca de ofertas/respostas e candidatos de rede) acontece
-  por **WebSocket** (`/ws`).
+- Cada navegador reserva **quatro canais** (transceivers) já no primeiro
+  offer/answer: microfone, áudio da tela, vídeo da tela e câmera. Ligar a
+  câmera ou compartilhar a tela é só um `replaceTrack()` — não precisa
+  renegociar, e todos podem ficar ativos ao mesmo tempo.
+- O **servidor** (Pion) recebe essas mídias e reencaminha para os demais,
+  renegociando com quem precisa quando alguém entra, sai ou começa a publicar
+  algo novo. Ninguém recebe a própria mídia de volta.
+- A **sinalização** acontece por **WebSocket** (`/ws`) e é orientada a estado:
+  a cada mudança o servidor manda o **retrato completo da sala** (evento
+  `state`) — participantes, mídias publicadas e quem está com a tela. Quem
+  acaba de entrar recebe exatamente a mesma coisa que quem já estava lá.
+
+### Protocolo de sinalização
+
+| Servidor → navegador   | Conteúdo                                                       |
+| ---------------------- | -------------------------------------------------------------- |
+| `welcome`              | o `peerId` desta conexão                                        |
+| `state`                | `{peers, tracks, screenSharer}` — o retrato completo da sala     |
+| `offer`                | oferta SDP (o SFU é sempre quem oferece)                        |
+| `candidate`            | candidato ICE                                                   |
+| `screenshare-granted`  | pode capturar a tela                                            |
+| `screenshare-rejected` | outra pessoa já está compartilhando                             |
+
+| Navegador → servidor  | Conteúdo                             |
+| --------------------- | ------------------------------------ |
+| `answer`              | resposta SDP                         |
+| `candidate`           | candidato ICE                        |
+| `screenshare-request` | pede a vez de compartilhar a tela    |
+| `screenshare-stop`    | devolve a vez                        |
+| `camera-state`        | `on` / `off`                         |
+| `mic-state`           | `live` / `muted`                     |
+
+## Variáveis de ambiente
+
+| Variável          | Para que serve                                                        |
+| ----------------- | --------------------------------------------------------------------- |
+| `PORT`            | porta HTTP (padrão `8080`; o Render injeta sozinho)                    |
+| `TURN_URL`        | `turn:host:porta` — vários separados por vírgula                       |
+| `TURN_USER`       | usuário do TURN                                                        |
+| `TURN_PASS`       | senha do TURN                                                          |
+| `ALLOWED_ORIGINS` | origens extras aceitas no WebSocket, além da própria (separadas por `,`) |
 
 ## Deploy no Render (grátis)
 
 O projeto já vem com um `Dockerfile` pronto. O Render dá HTTPS automático
-(necessário para o microfone funcionar fora do localhost).
+(necessário para o microfone e a câmera funcionarem fora do localhost).
 
 ### 1. Suba o código para o GitHub
 
@@ -70,7 +120,7 @@ Crie um repositório e faça push do projeto.
 
 ### 2. Crie um TURN grátis (necessário no Render)
 
-O Render só expõe **uma porta HTTP**, então o áudio do WebRTC precisa passar
+O Render só expõe **uma porta HTTP**, então a mídia do WebRTC precisa passar
 por um servidor **TURN** (relay). Um grátis:
 
 1. Crie uma conta em https://dashboard.metered.ca/signup?tool=turnserver
@@ -94,22 +144,23 @@ por um servidor **TURN** (relay). Um grátis:
 
 5. Clique em **Create Web Service** e aguarde o build.
 
-Ao final você recebe uma URL tipo `https://seu-app.onrender.com`. Abra em dois
-dispositivos e teste. 🎧
+Ao final você recebe uma URL tipo `https://seu-app.onrender.com`. Abra em
+alguns dispositivos e teste. 🎧
 
 > **Atenção:** no plano grátis o serviço "dorme" após ~15 min sem uso; o
 > primeiro acesso depois disso demora ~1 minuto para acordar. É normal.
+
+## Ajustes de qualidade
+
+No topo do `<script>` em `web/index.html` tem um bloco `CONFIG` com o bitrate
+do áudio, o modo música (desliga os filtros do microfone e usa estéreo) e os
+tetos de resolução/fps/bitrate da tela e da câmera.
 
 ## Próximos passos possíveis
 
 - **Salas separadas**: hoje todo mundo cai na mesma sala. Dá para adicionar um
   `?sala=xyz` e agrupar os participantes por ID de sala.
-- **Mutar / indicador de quem está falando**.
+- **Nomes e autenticação**: hoje a lista é anônima (`Participante 1`, `2`...).
+- **Indicador de quem está falando**.
 - **TURN próprio**: para produção, vale rodar seu próprio servidor TURN
   (ex.: coturn) em vez de depender de um serviço grátis.
-
-## Funcionalidade
-
-- Nome salvo em cache
-- Autenticação básica
-- Filtro de linha
