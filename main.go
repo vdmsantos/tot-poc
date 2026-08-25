@@ -49,7 +49,15 @@ const (
 // continuou com o index.html antigo em cache, e a sala ficou meio funcionando
 // (o áudio passava, mas a lista de participantes e as câmeras não apareciam)
 // sem nenhum erro visível. Ver também noCache, que evita o cache velho.
-const protocolVersion = "3"
+const protocolVersion = "4"
+
+// Depois desse tempo sem nenhum sinal de vida do navegador (mexer o mouse,
+// teclar, falar), a pessoa é tirada da sala e volta pra tela de entrada. É var
+// e não const pra os testes conseguirem encurtar.
+var idleTimeout = 30 * time.Minute
+
+// nomeMaximo limita o tamanho do nome que alguém pode escolher.
+const nomeMaximo = 32
 
 var (
 	upgrader = websocket.Upgrader{CheckOrigin: checkOrigin}
@@ -95,6 +103,10 @@ type peerState struct {
 	// continua publicada mas parada.
 	muted    bool
 	cameraOn bool
+	name     string
+
+	// Último sinal de vida do navegador, usado pelo corte por inatividade.
+	lastActivity time.Time
 }
 
 // roomTrack é uma mídia publicada por alguém, pronta pra ser reencaminhada.
@@ -150,6 +162,7 @@ type peerInfo struct {
 	PeerID   string `json:"peerId"`
 	Muted    bool   `json:"muted"`
 	CameraOn bool   `json:"cameraOn"`
+	Name     string `json:"name,omitempty"` // vazio = o navegador mostra "Participante N"
 }
 
 type roomState struct {
@@ -176,6 +189,7 @@ func main() {
 		port = "8080"
 	}
 
+	startIdleWatcher()
 	log.Printf("Sala de voz rodando na porta %s", port)
 
 	server := &http.Server{
@@ -311,6 +325,7 @@ func joinRoom(p *peerState) error {
 	defer roomLock.Unlock()
 
 	peers = append(peers, p)
+	p.lastActivity = time.Now()
 
 	data, err := json.Marshal(welcomeInfo{PeerID: p.id, Protocol: protocolVersion})
 	if err != nil {
@@ -347,6 +362,72 @@ func leaveRoom(p *peerState) {
 
 	_ = p.pc.Close()
 	signalPeers()
+}
+
+// startIdleWatcher varre a sala de tempos em tempos atrás de quem sumiu.
+func startIdleWatcher() {
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			kickIdlePeers(time.Now())
+		}
+	}()
+}
+
+// kickIdlePeers tira da sala quem passou de idleTimeout sem dar sinal de vida.
+// A pessoa recebe um aviso antes de a conexão cair, pra o navegador dela
+// conseguir mostrar o motivo em vez de só voltar pra tela de entrada do nada.
+func kickIdlePeers(agora time.Time) {
+	roomLock.RLock()
+	var parados []*peerState
+	for _, p := range peers {
+		if agora.Sub(p.lastActivity) >= idleTimeout {
+			parados = append(parados, p)
+		}
+	}
+	roomLock.RUnlock()
+
+	for _, p := range parados {
+		log.Printf("tirando %s da sala por inatividade", p.id)
+		if err := p.ws.WriteJSON(&websocketMessage{Event: "kicked", Data: "inatividade"}); err != nil {
+			log.Printf("avisando %s do corte: %v", p.id, err)
+		}
+		leaveRoom(p)
+
+		// Fechar o socket na sequência descartaria o aviso que acabamos de
+		// escrever (ele ainda está no buffer de saída, e um fechamento abrupto
+		// vira RST). Mandamos o close do próprio WebSocket, que respeita a
+		// ordem dos quadros, e só derrubamos o TCP se o outro lado não sair
+		// sozinho.
+		deadline := time.Now().Add(5 * time.Second)
+		_ = p.ws.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "inatividade"), deadline)
+		time.AfterFunc(5*time.Second, func() { _ = p.ws.Close() })
+	}
+}
+
+// marcarAtividade registra que o navegador dessa pessoa deu sinal de vida.
+func marcarAtividade(p *peerState) {
+	roomLock.Lock()
+	p.lastActivity = time.Now()
+	roomLock.Unlock()
+}
+
+// sanitizeName limpa o nome que veio do navegador: sem caracteres de controle
+// (que bagunçariam a lista) e com tamanho limitado.
+func sanitizeName(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
+	if runes := []rune(s); len(runes) > nomeMaximo {
+		s = strings.TrimSpace(string(runes[:nomeMaximo]))
+	}
+	return s
 }
 
 // releaseScreen devolve o "direito" de compartilhar tela para a sala, se for
@@ -395,7 +476,12 @@ func stateForLocked(dest *peerState) roomState {
 		Tracks: make([]trackInfo, 0, len(tracks)),
 	}
 	for _, p := range peers {
-		state.Peers = append(state.Peers, peerInfo{PeerID: p.id, Muted: p.muted, CameraOn: p.cameraOn})
+		state.Peers = append(state.Peers, peerInfo{
+			PeerID:   p.id,
+			Muted:    p.muted,
+			CameraOn: p.cameraOn,
+			Name:     p.name,
+		})
 	}
 
 	mids := midsFor(dest)
@@ -793,6 +879,7 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 		// "screenshare-granted" — assim duas pessoas nunca acabam transmitindo
 		// a tela ao mesmo tempo por causa de uma corrida.
 		case "screenshare-request":
+			marcarAtividade(p)
 			roomLock.Lock()
 			busy := screenSharer != nil && screenSharer != p
 			if !busy {
@@ -810,19 +897,53 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			broadcastState()
 
+		// Roubar a vez de quem já está compartilhando. Diferente do
+		// "screenshare-request", aqui não tem recusa: quem pediu leva, e quem
+		// estava é avisado pra parar de transmitir.
+		case "screenshare-steal":
+			marcarAtividade(p)
+			roomLock.Lock()
+			anterior := screenSharer
+			screenSharer = p
+			roomLock.Unlock()
+
+			if anterior != nil && anterior != p {
+				_ = anterior.ws.WriteJSON(&websocketMessage{Event: "screenshare-taken"})
+			}
+			if err := c.WriteJSON(&websocketMessage{Event: "screenshare-granted"}); err != nil {
+				releaseScreen(p)
+				continue
+			}
+			broadcastState()
+
 		case "screenshare-stop":
 			releaseScreen(p)
+
+		case "set-name":
+			marcarAtividade(p)
+			nome := sanitizeName(message.Data)
+			roomLock.Lock()
+			p.name = nome
+			roomLock.Unlock()
+			broadcastState()
+
+		// Sinal de vida do navegador (mouse, teclado, voz). Só serve pro corte
+		// por inatividade — responder ofertas sozinho não conta como estar ali.
+		case "activity":
+			marcarAtividade(p)
 
 		// Câmera e microfone não têm exclusividade: o servidor só guarda e
 		// repassa o estado, que é o que diz aos outros navegadores se devem
 		// mostrar a miniatura de vídeo dessa pessoa.
 		case "camera-state":
+			marcarAtividade(p)
 			roomLock.Lock()
 			p.cameraOn = message.Data == "on"
 			roomLock.Unlock()
 			broadcastState()
 
 		case "mic-state":
+			marcarAtividade(p)
 			roomLock.Lock()
 			p.muted = message.Data == "muted"
 			roomLock.Unlock()

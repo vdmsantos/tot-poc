@@ -67,7 +67,8 @@ type testClient struct {
 	gotState bool
 	errs     []string
 
-	shareResult  chan string // "granted" | "rejected"
+	shareResult  chan string // "granted" | "rejected" | "taken"
+	kicked       chan string // motivo mandado pelo servidor
 	closed       chan struct{}
 	closeOnce    sync.Once
 	shuttingDown bool // protegido por mu
@@ -86,6 +87,7 @@ func newTestClient(t *testing.T, wsURL, name string) *testClient {
 		name:        name,
 		pc:          pc,
 		shareResult: make(chan string, 4),
+		kicked:      make(chan string, 2),
 		closed:      make(chan struct{}),
 	}
 
@@ -238,6 +240,16 @@ func (c *testClient) readLoop() {
 			case c.shareResult <- "rejected":
 			default:
 			}
+		case "screenshare-taken":
+			select {
+			case c.shareResult <- "taken":
+			default:
+			}
+		case "kicked":
+			select {
+			case c.kicked <- m.Data:
+			default:
+			}
 		}
 	}
 }
@@ -323,6 +335,11 @@ func peerNoRetrato(s roomState, peerID string) *peerInfo {
 func peerNaSala(peerID string) *peerState {
 	roomLock.RLock()
 	defer roomLock.RUnlock()
+	return peerNaSalaSemLock(peerID)
+}
+
+// peerNaSalaSemLock exige roomLock já tomado.
+func peerNaSalaSemLock(peerID string) *peerState {
 	for _, p := range peers {
 		if p.id == peerID {
 			return p
@@ -414,6 +431,181 @@ func transceiverDaTrack(p *peerState, trackID string) *webrtc.RTPTransceiver {
 		}
 	}
 	return nil
+}
+
+// TestNomeApareceParaOsOutros cobre o nome escolhido na entrada: quem informa
+// aparece com ele para a sala toda; quem não informa continua anônimo.
+func TestNomeApareceParaOsOutros(t *testing.T) {
+	resetRoom(t)
+	wsURL := startServer(t)
+
+	comNome := newTestClient(t, wsURL, "comNome")
+	semNome := newTestClient(t, wsURL, "semNome")
+	for _, c := range []*testClient{comNome, semNome} {
+		c := c
+		waitFor(t, 20*time.Second, c.name+" entrar", func() error {
+			if c.id() == "" {
+				return fmt.Errorf("sem welcome")
+			}
+			return nil
+		})
+	}
+
+	comNome.send("set-name", "  Gabriel\tK  ")
+
+	waitFor(t, 15*time.Second, "o nome chegar nos dois", func() error {
+		for _, c := range []*testClient{comNome, semNome} {
+			s := c.snapshot()
+			p := peerNoRetrato(s, comNome.id())
+			if p == nil {
+				return fmt.Errorf("%s não vê quem tem nome", c.name)
+			}
+			// Espaços das pontas e caracteres de controle são limpos.
+			if p.Name != "GabrielK" {
+				return fmt.Errorf("%s vê nome %q", c.name, p.Name)
+			}
+			outro := peerNoRetrato(s, semNome.id())
+			if outro == nil {
+				return fmt.Errorf("%s não vê quem está sem nome", c.name)
+			}
+			if outro.Name != "" {
+				return fmt.Errorf("quem não informou nome apareceu como %q", outro.Name)
+			}
+		}
+		return nil
+	})
+}
+
+// TestNomeLongoEhCortado evita que um nome gigante estoure a lista.
+func TestNomeLongoEhCortado(t *testing.T) {
+	longo := strings.Repeat("a", 200)
+	if got := sanitizeName(longo); len([]rune(got)) != nomeMaximo {
+		t.Errorf("nome cortado tem %d caracteres, esperava %d", len([]rune(got)), nomeMaximo)
+	}
+	if got := sanitizeName("oi\n\r\tali"); got != "oiali" {
+		t.Errorf("sanitizeName tirou os controles errado: %q", got)
+	}
+}
+
+// TestRoubarCompartilhamento: quem pede pra assumir leva, e quem estava
+// compartilhando é avisado pra parar.
+func TestRoubarCompartilhamento(t *testing.T) {
+	resetRoom(t)
+	wsURL := startServer(t)
+
+	a := newTestClient(t, wsURL, "peerA")
+	b := newTestClient(t, wsURL, "peerB")
+	for _, c := range []*testClient{a, b} {
+		c := c
+		waitFor(t, 20*time.Second, c.name+" entrar", func() error {
+			if c.id() == "" {
+				return fmt.Errorf("sem welcome")
+			}
+			return nil
+		})
+	}
+
+	a.send("screenshare-request", "")
+	if res := <-a.shareResult; res != "granted" {
+		t.Fatalf("peerA: esperava granted, veio %q", res)
+	}
+
+	b.send("screenshare-steal", "")
+	select {
+	case res := <-b.shareResult:
+		if res != "granted" {
+			t.Fatalf("peerB: esperava granted ao assumir, veio %q", res)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("peerB não recebeu resposta ao assumir o compartilhamento")
+	}
+
+	select {
+	case res := <-a.shareResult:
+		if res != "taken" {
+			t.Fatalf("peerA: esperava aviso de que perdeu a vez, veio %q", res)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("peerA não foi avisado de que perdeu o compartilhamento")
+	}
+
+	waitFor(t, 10*time.Second, "a sala apontar peerB como quem compartilha", func() error {
+		if s := a.snapshot(); s.ScreenSharer != b.id() {
+			return fmt.Errorf("screenSharer=%q, esperava %q", s.ScreenSharer, b.id())
+		}
+		return nil
+	})
+
+	// O "screenshare-stop" atrasado de quem perdeu a vez não pode derrubar o
+	// compartilhamento de quem assumiu.
+	a.send("screenshare-stop", "")
+	time.Sleep(300 * time.Millisecond)
+	if s := b.snapshot(); s.ScreenSharer != b.id() {
+		t.Fatalf("o stop atrasado de peerA derrubou peerB: screenSharer=%q", s.ScreenSharer)
+	}
+}
+
+// TestInatividadeTiraDaSala: quem passa do limite sem dar sinal de vida é
+// avisado e sai da sala; quem continua ativo fica.
+func TestInatividadeTiraDaSala(t *testing.T) {
+	resetRoom(t)
+	wsURL := startServer(t)
+
+	parado := newTestClient(t, wsURL, "parado")
+	ativo := newTestClient(t, wsURL, "ativo")
+	for _, c := range []*testClient{parado, ativo} {
+		c := c
+		waitFor(t, 20*time.Second, c.name+" entrar", func() error {
+			if c.id() == "" {
+				return fmt.Errorf("sem welcome")
+			}
+			return nil
+		})
+	}
+
+	// "ativo" acabou de mexer no mouse; "parado" está lá desde o começo.
+	ativo.send("activity", "")
+	waitFor(t, 10*time.Second, "o servidor registrar a atividade", func() error {
+		p := peerNaSala(ativo.id())
+		if p == nil {
+			return fmt.Errorf("ativo sumiu da sala")
+		}
+		roomLock.RLock()
+		defer roomLock.RUnlock()
+		if p.lastActivity.IsZero() {
+			return fmt.Errorf("sem atividade registrada")
+		}
+		return nil
+	})
+
+	// Finge que passou o tempo do corte desde que "parado" entrou, mas ainda
+	// não desde a última atividade de "ativo".
+	roomLock.Lock()
+	peerNaSalaSemLock(parado.id()).lastActivity = time.Now().Add(-idleTimeout - time.Minute)
+	roomLock.Unlock()
+
+	kickIdlePeers(time.Now())
+
+	select {
+	case motivo := <-parado.kicked:
+		if motivo != "inatividade" {
+			t.Errorf("motivo do corte = %q, esperava inatividade", motivo)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("quem estava parado não foi avisado do corte")
+	}
+
+	waitFor(t, 10*time.Second, "a sala ficar só com quem está ativo", func() error {
+		roomLock.RLock()
+		defer roomLock.RUnlock()
+		if len(peers) != 1 {
+			return fmt.Errorf("%d participantes na sala, esperava 1", len(peers))
+		}
+		if peers[0].id != ativo.id() {
+			return fmt.Errorf("sobrou %q na sala, esperava %q", peers[0].id, ativo.id())
+		}
+		return nil
+	})
 }
 
 // TestColegaApareceNaLista cobre o básico que precisa funcionar sempre: entrei

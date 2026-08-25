@@ -62,6 +62,20 @@
     }
     .lobby-card h1 { margin: 0 0 6px; font-size: 22px; }
     .lobby-card .sub { margin: 0 0 24px; color: var(--text-muted); font-size: 14px; }
+    .campo-nome {
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 12px 13px;
+      border-radius: 8px;
+      border: 1px solid #1e1f22;
+      background: var(--bg-elevated);
+      color: var(--text);
+      font: inherit;
+      font-size: 14px;
+    }
+    .campo-nome:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    .campo-nome::placeholder { color: var(--text-dim); }
+
     .btn-primary {
       width: 100%;
       background: var(--accent);
@@ -339,6 +353,55 @@
       .controlbar { justify-content: center; }
     }
 
+    /* ---------------- Menu de contexto ---------------- */
+    .ctx-menu {
+      position: fixed;
+      z-index: 30;
+      min-width: 216px;
+      max-width: 280px;
+      padding: 6px;
+      border-radius: 8px;
+      background: var(--bg-elevated);
+      box-shadow: 0 10px 32px rgba(0, 0, 0, .6);
+      border: 1px solid rgba(255, 255, 255, .06);
+    }
+    .ctx-menu[hidden] { display: none; }
+    .ctx-titulo {
+      padding: 6px 10px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ctx-item {
+      display: flex; align-items: center; gap: 9px;
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 5px;
+      background: transparent;
+      font-size: 14px;
+      text-align: left;
+    }
+    .ctx-item:hover { background: var(--accent); color: #fff; }
+    .ctx-item.perigo { color: var(--red); }
+    .ctx-item.perigo:hover { background: var(--red); color: #fff; }
+    .ctx-item svg { flex-shrink: 0; opacity: .85; }
+    .ctx-sep { height: 1px; margin: 5px 8px; background: rgba(255, 255, 255, .08); }
+    .ctx-slider { padding: 6px 10px 10px; }
+    .ctx-slider .linha {
+      display: flex; justify-content: space-between;
+      font-size: 12px; color: var(--text-muted); margin-bottom: 6px;
+    }
+    .ctx-slider input[type=range] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
     .toast {
       position: fixed;
       left: 50%; bottom: 88px;
@@ -369,6 +432,8 @@
       </div>
       <h1>Sala de Voz</h1>
       <p class="sub">Áudio, câmera e compartilhamento de tela para todo mundo na mesma sala.</p>
+      <input id="nome" class="campo-nome" type="text" maxlength="32" autocomplete="nickname"
+             placeholder="Seu nome (opcional)" aria-label="Seu nome (opcional)" />
       <button id="join" class="btn-primary">Entrar na sala</button>
       <div id="hint" class="hint">Abra esta mesma página em outra aba ou dispositivo pra testar.</div>
     </div>
@@ -407,6 +472,12 @@
           <line class="slash" x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:none"/>
         </svg>
       </button>
+      <button id="deafenBtn" class="icon-btn" title="Não ouvir ninguém" aria-label="Não ouvir ninguém">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 3a8 8 0 0 0-8 8v5a3 3 0 0 0 3 3h1a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H6v-1a6 6 0 1 1 12 0v1h-2a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1a3 3 0 0 0 3-3v-5a8 8 0 0 0-8-8z"/>
+          <line class="slash" x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:none"/>
+        </svg>
+      </button>
       <button id="cameraBtn" class="icon-btn" title="Ligar câmera" aria-label="Ligar câmera" disabled>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
           <path d="M4 6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-2.4l4.2 2.8A1 1 0 0 0 21 15.6V8.4a1 1 0 0 0-1.55-.84L15 10.4V8a2 2 0 0 0-2-2H4z"/>
@@ -435,6 +506,7 @@
   </div>
 
   <div id="audios" hidden></div>
+  <div id="menu" class="ctx-menu" hidden role="menu"></div>
   <div id="toast" class="toast" hidden></div>
 
   <script>
@@ -480,12 +552,15 @@
     // versão, esta página está velha (veio do cache do navegador) e se recarrega
     // sozinha — antes ela só ficava meio funcionando, sem erro nenhum: o áudio
     // passava, mas a lista de participantes e as câmeras nunca apareciam.
-    const PROTOCOL = '3';
+    const PROTOCOL = '4';
 
     const joinBtn = document.getElementById('join');
+    const nomeInput = document.getElementById('nome');
+    const menuEl = document.getElementById('menu');
     const shareBtn = document.getElementById('shareScreen');
     const cameraBtn = document.getElementById('cameraBtn');
     const muteBtn = document.getElementById('muteBtn');
+    const deafenBtn = document.getElementById('deafenBtn');
     const leaveBtn = document.getElementById('leaveBtn');
     const peopleBtn = document.getElementById('peopleBtn');
     const lobbyEl = document.getElementById('lobby');
@@ -535,6 +610,20 @@
     let cameraOn = false;
     let sharingScreen = false;
     let awaitingShareGrant = false;
+
+    // Preferências de escuta. Tudo isso é só deste navegador: mutar ou baixar
+    // o volume de alguém não afeta ninguém mais na sala.
+    let ensurdecido = false;            // não ouvir ninguém
+    let micAntesDoEnsurdecer = true;    // pra devolver o microfone ao desfazer
+    let volumeDaTela = 1;               // volume do áudio do compartilhamento
+    const volumePorPeer = new Map();    // peerId -> 0..1
+    const mutadosPorMim = new Set();    // peerIds que eu silenciei
+    const telasIgnoradas = new Set();   // compartilhamentos que eu parei de ver
+
+    const CHAVE_NOME = 'salaDeVoz.nome';
+    let nomeLocal = '';
+    try { nomeLocal = localStorage.getItem(CHAVE_NOME) || ''; } catch (e) { /* sem storage */ }
+    nomeInput.value = nomeLocal;
 
     // Quem compartilha vê a própria tela numa miniatura; clicar nela abre no
     // palco (e clicar de novo devolve pra miniatura), igual ao Discord. Começa
@@ -596,10 +685,18 @@
     }
 
     // ---- Entrar na sala ------------------------------------------------
+    nomeInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !joinBtn.disabled) joinBtn.click();
+    });
+
     joinBtn.onclick = async () => {
       joinBtn.disabled = true;
       hintEl.textContent = 'Pedindo acesso ao microfone...';
       hintEl.classList.remove('error');
+
+      // O nome é opcional: em branco, os outros veem "Participante N".
+      nomeLocal = nomeInput.value.trim().slice(0, 32);
+      try { localStorage.setItem(CHAVE_NOME, nomeLocal); } catch (e) { /* sem storage */ }
 
       const audioConstraints = {
         echoCancellation: !CONFIG.musica,   // tira eco (bom pra voz)
@@ -714,6 +811,7 @@
             }
             myPeerId = info.peerId;
             sessionStorage.removeItem('recarregadoPorVersao');
+            if (nomeLocal) send('set-name', nomeLocal);
             // Só aqui: o monitor precisa saber de quem é a voz que ele está
             // ouvindo, e antes do welcome a gente ainda não sabe quem somos.
             iniciarMonitorDeVoz();
@@ -760,8 +858,24 @@
 
           case 'screenshare-rejected':
             awaitingShareGrant = false;
-            showToast('Alguém já está compartilhando a tela. Tente de novo quando essa pessoa parar.');
+            showToast('Alguém já está compartilhando a tela.');
             render();
+            break;
+
+          // Outra pessoa tomou a vez: paramos de transmitir sem avisar a sala,
+          // senão o "screenshare-stop" desfaria o compartilhamento de quem
+          // acabou de assumir.
+          case 'screenshare-taken':
+            showToast('Outra pessoa assumiu o compartilhamento de tela.');
+            stopSharing({ avisarServidor: false });
+            break;
+
+          case 'kicked':
+            leaveRoom();
+            hintEl.textContent = m.data === 'inatividade'
+              ? 'Você ficou 30 minutos sem atividade e saiu da sala. É só entrar de novo.'
+              : 'Você foi desconectado da sala.';
+            hintEl.classList.add('error');
             break;
 
           default:
@@ -783,6 +897,25 @@
       render();
     };
 
+    // Ensurdecer: para de ouvir todo mundo. Como no Discord, isso também muta
+    // o seu microfone — não faz sentido continuar falando com gente que você
+    // não está ouvindo. Ao desfazer, o microfone volta como estava.
+    deafenBtn.onclick = () => {
+      ensurdecido = !ensurdecido;
+      deafenBtn.classList.toggle('on', ensurdecido);
+      deafenBtn.title = ensurdecido ? 'Voltar a ouvir' : 'Não ouvir ninguém';
+      deafenBtn.setAttribute('aria-label', deafenBtn.title);
+      deafenBtn.querySelector('.slash').style.display = ensurdecido ? 'block' : 'none';
+
+      if (ensurdecido) {
+        micAntesDoEnsurdecer = micEnabled;
+        if (micEnabled) muteBtn.click();
+      } else if (micAntesDoEnsurdecer && !micEnabled) {
+        muteBtn.click();
+      }
+      render();
+    };
+
     // ---- Compartilhamento de tela --------------------------------------
     // Pedimos permissão ao servidor ANTES de capturar a tela. Assim, se outra
     // pessoa chegou primeiro, nada é capturado nem transmitido.
@@ -792,10 +925,17 @@
         return;
       }
       if (awaitingShareGrant) return;
+      pedirCompartilhamento(false);
+    };
+
+    // roubar=true assume a vez de quem já está compartilhando, em vez de ser
+    // recusado. Quem estava recebe um aviso e para de transmitir.
+    function pedirCompartilhamento(roubar) {
       awaitingShareGrant = true;
       shareBtn.disabled = true;
-      send('screenshare-request');
-    };
+      send(roubar ? 'screenshare-steal' : 'screenshare-request');
+      render();
+    }
 
     // Alguns navegadores (Firefox) recusam o pedido inteiro quando o áudio vem
     // junto — nesse caso tentamos de novo só com a imagem.
@@ -855,10 +995,10 @@
       render();
     }
 
-    async function stopSharing() {
+    async function stopSharing({ avisarServidor = true } = {}) {
       if (!sharingScreen && !screenVideoTrack) {
         awaitingShareGrant = false;
-        send('screenshare-stop');
+        if (avisarServidor) send('screenshare-stop');
         render();
         return;
       }
@@ -882,7 +1022,7 @@
       if (screenAudioTrack) { screenAudioTrack.stop(); screenAudioTrack = null; }
       localScreenStream = null;
 
-      send('screenshare-stop');
+      if (avisarServidor) send('screenshare-stop');
       render();
     }
 
@@ -1022,6 +1162,16 @@
       sharingScreen = false;
       awaitingShareGrant = false;
       previaExpandida = false;
+      ensurdecido = false;
+      micAntesDoEnsurdecer = true;
+      volumeDaTela = 1;
+      volumePorPeer.clear();
+      mutadosPorMim.clear();
+      telasIgnoradas.clear();
+      fecharMenu();
+      deafenBtn.classList.remove('on');
+      deafenBtn.title = 'Não ouvir ninguém';
+      deafenBtn.querySelector('.slash').style.display = 'none';
       muteBtn.classList.remove('on');
       muteBtn.title = 'Mutar microfone';
       muteBtn.querySelector('.slash').style.display = 'none';
@@ -1038,6 +1188,23 @@
     }
 
     window.addEventListener('pagehide', () => { if (ws) leaveRoom(); });
+
+    // ---- Sinal de vida --------------------------------------------------
+    // O servidor tira da sala quem passa 30 min sem dar sinal de vida. Só
+    // responder as ofertas não conta (o navegador faz isso sozinho com a aba
+    // esquecida aberta), então avisamos quando a pessoa realmente mexe — ou
+    // fala. Um aviso por minuto basta.
+    let ultimaAtividadeEnviada = 0;
+    function registrarAtividade() {
+      if (!ws) return;
+      const agora = Date.now();
+      if (agora - ultimaAtividadeEnviada < 60000) return;
+      ultimaAtividadeEnviada = agora;
+      send('activity');
+    }
+    for (const evento of ['mousedown', 'mousemove', 'keydown', 'touchstart', 'wheel']) {
+      window.addEventListener(evento, registrarAtividade, { passive: true });
+    }
 
     // ---- Helpers de mídia ----------------------------------------------
     function setMaxBitrate(sender, bitrate) {
@@ -1144,6 +1311,11 @@
       return info.mid ? 'mid:' + info.mid : 'id:' + info.id;
     }
 
+    function volumeDe(peerId) {
+      const v = volumePorPeer.get(peerId);
+      return v === undefined ? 1 : v;
+    }
+
     // ---- Interface ------------------------------------------------------
     // Cada parte é isolada: se uma quebrar, as outras continuam. Sem isso, um
     // erro em qualquer canto derrubaria a tela inteira (inclusive o áudio, que
@@ -1162,9 +1334,12 @@
       return room.peers.filter(p => p.peerId !== myPeerId);
     }
 
+    // Nome escolhido pela pessoa, se ela informou; senão a numeração antiga.
     function rotulo(peerId) {
-      if (peerId === myPeerId) return 'Você';
-      const i = outrosParticipantes().findIndex(p => p.peerId === peerId);
+      const p = room.peers.find(x => x.peerId === peerId);
+      if (p && p.name) return peerId === myPeerId ? p.name + ' (você)' : p.name;
+      if (peerId === myPeerId) return nomeLocal ? nomeLocal + ' (você)' : 'Você';
+      const i = outrosParticipantes().findIndex(x => x.peerId === peerId);
       return i < 0 ? 'Participante' : `Participante ${i + 1}`;
     }
 
@@ -1206,6 +1381,11 @@
         const mudo = meu ? !micEnabled : p.muted;
         badges.appendChild(badge(mudo ? ICON_MIC_MUTED : ICON_MIC, mudo ? 'muted' : '',
           mudo ? 'Microfone mutado' : 'Microfone ligado'));
+
+        li.oncontextmenu = (e) => {
+          e.preventDefault();
+          abrirMenuDaPessoa(e, p.peerId, null);
+        };
 
         li.append(avatar, nome, badges);
         participantsEl.appendChild(li);
@@ -1255,6 +1435,11 @@
           el.play().catch(() => {});
           pararMonitor(chave);
         }
+
+        // Preferências locais de escuta. Silenciar alguém vale também para o
+        // áudio da tela dessa pessoa.
+        el.muted = ensurdecido || mutadosPorMim.has(item.peerId);
+        el.volume = item.isMic ? volumeDe(item.peerId) : volumeDaTela;
         // Fora do if de propósito: monitorarVoz é idempotente, e assim o
         // analisador é criado mesmo que o áudio tenha chegado antes de o
         // monitor existir.
@@ -1265,7 +1450,8 @@
     // Quem aparece no palco: a tela de outra pessoa entra sozinha; a minha
     // própria só quando eu clico na miniatura pra expandir.
     function telaNoPalco() {
-      if (room.screenSharer && room.screenSharer !== myPeerId) {
+      if (room.screenSharer && room.screenSharer !== myPeerId &&
+          !telasIgnoradas.has(room.screenSharer)) {
         const info = infoDe(room.screenSharer, 'screen');
         const media = mediaDe(info);
         if (media) return { chave: chaveDe(info), media, dono: room.screenSharer, propria: false };
@@ -1274,6 +1460,17 @@
         return { chave: 'local-screen', media: screenVideoTrack, dono: myPeerId, propria: true };
       }
       return null;
+    }
+
+    // Compartilhamento que eu escolhi parar de ver: sai do palco mas continua
+    // como uma miniatura ao lado das câmeras, pra eu poder voltar a assistir.
+    function telaIgnoradaVisivel() {
+      const dono = room.screenSharer;
+      if (!dono || dono === myPeerId || !telasIgnoradas.has(dono)) return null;
+      const info = infoDe(dono, 'screen');
+      const media = mediaDe(info);
+      if (!media) return null;
+      return { chave: chaveDe(info), media, dono };
     }
 
     let telaAtual = '';
@@ -1310,6 +1507,11 @@
         itens.push({ chave: 'local-screen', media: screenVideoTrack, label: 'Sua tela',
                      tipo: 'tela', peerId: myPeerId });
       }
+      const ignorada = telaIgnoradaVisivel();
+      if (ignorada) {
+        itens.push({ chave: ignorada.chave, media: ignorada.media, tipo: 'tela-ignorada',
+                     label: 'Tela de ' + rotulo(ignorada.dono), peerId: ignorada.dono });
+      }
       for (const p of participantesOrdenados()) {
         const meu = p.peerId === myPeerId;
         const media = meu
@@ -1321,7 +1523,7 @@
           label: rotulo(p.peerId),
           tipo: meu ? 'eu' : 'peer',
           peerId: p.peerId,
-          mudo: meu ? !micEnabled : p.muted,
+          mudo: meu ? !micEnabled : (p.muted || mutadosPorMim.has(p.peerId)),
         });
       }
 
@@ -1377,9 +1579,9 @@
     }
 
     function montarTile(item) {
+      const ehTela = item.tipo === 'tela' || item.tipo === 'tela-ignorada';
       const tile = document.createElement('div');
-      tile.className = 'tile' + (item.tipo === 'eu' ? ' self' : '') +
-                       (item.tipo === 'tela' ? ' tela' : '');
+      tile.className = 'tile' + (item.tipo === 'eu' ? ' self' : '') + (ehTela ? ' tela' : '');
       if (item.peerId) tile.dataset.peer = item.peerId;
 
       if (item.media) {
@@ -1412,7 +1614,18 @@
       if (item.tipo === 'tela') {
         tile.title = 'Clique para ver sua tela em tamanho grande';
         tile.onclick = () => { previaExpandida = true; render(); };
+      } else if (item.tipo === 'tela-ignorada') {
+        tile.title = 'Clique para voltar a ver este compartilhamento';
+        tile.onclick = () => { telasIgnoradas.delete(item.peerId); render(); };
+      } else {
+        // Duplo clique abre em tela cheia — o mesmo que o menu do botão
+        // direito faz, mas no gesto que todo player de vídeo já usa.
+        tile.ondblclick = () => telaCheia(tile);
       }
+      tile.oncontextmenu = (e) => {
+        e.preventDefault();
+        abrirMenuDoItem(e, item, tile);
+      };
       return tile;
     }
 
@@ -1449,6 +1662,181 @@
     stageScreenEl.onclick = () => {
       if (previaExpandida) { previaExpandida = false; render(); }
     };
+
+    // ---- Tela cheia ------------------------------------------------------
+    function telaCheia(el) {
+      if (!el) return;
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+        return;
+      }
+      const pedir = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (!pedir) {
+        showToast('Este navegador não deixa abrir em tela cheia.');
+        return;
+      }
+      pedir.call(el).catch(err => console.warn('tela cheia:', err));
+    }
+
+    // ---- Menu do botão direito -------------------------------------------
+    function fecharMenu() { menuEl.hidden = true; menuEl.innerHTML = ''; }
+
+    document.addEventListener('click', (e) => {
+      if (!menuEl.hidden && !menuEl.contains(e.target)) fecharMenu();
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fecharMenu(); });
+    window.addEventListener('blur', fecharMenu);
+
+    function abrirMenu(evento, titulo, itens) {
+      menuEl.innerHTML = '';
+
+      const cabecalho = document.createElement('div');
+      cabecalho.className = 'ctx-titulo';
+      cabecalho.textContent = titulo;
+      menuEl.appendChild(cabecalho);
+
+      for (const item of itens) {
+        if (item.tipo === 'separador') {
+          const sep = document.createElement('div');
+          sep.className = 'ctx-sep';
+          menuEl.appendChild(sep);
+        } else if (item.tipo === 'slider') {
+          const caixa = document.createElement('div');
+          caixa.className = 'ctx-slider';
+          const linha = document.createElement('div');
+          linha.className = 'linha';
+          const nome = document.createElement('span');
+          nome.textContent = item.label;
+          const valor = document.createElement('span');
+          valor.textContent = Math.round(item.valor * 100) + '%';
+          linha.append(nome, valor);
+          const range = document.createElement('input');
+          range.type = 'range';
+          range.min = '0';
+          range.max = '100';
+          range.value = String(Math.round(item.valor * 100));
+          range.oninput = () => {
+            valor.textContent = range.value + '%';
+            item.aoMudar(Number(range.value) / 100);
+          };
+          caixa.append(linha, range);
+          menuEl.appendChild(caixa);
+        } else {
+          const botao = document.createElement('button');
+          botao.className = 'ctx-item' + (item.perigo ? ' perigo' : '');
+          botao.type = 'button';
+          botao.textContent = item.label;
+          botao.onclick = () => { fecharMenu(); item.aoClicar(); };
+          menuEl.appendChild(botao);
+        }
+      }
+
+      // Posiciona junto do cursor, mas sem deixar o menu sair da janela.
+      menuEl.hidden = false;
+      menuEl.style.left = '0px';
+      menuEl.style.top = '0px';
+      const caixa = menuEl.getBoundingClientRect();
+      const x = Math.min(evento.clientX, window.innerWidth - caixa.width - 8);
+      const y = Math.min(evento.clientY, window.innerHeight - caixa.height - 8);
+      menuEl.style.left = Math.max(8, x) + 'px';
+      menuEl.style.top = Math.max(8, y) + 'px';
+    }
+
+    // Menu de um quadro da grade (câmera, sua tela ou tela ignorada).
+    function abrirMenuDoItem(evento, item, tile) {
+      if (item.tipo === 'tela' || item.tipo === 'tela-ignorada') {
+        abrirMenuDaTela(evento, item.peerId, tile);
+        return;
+      }
+      abrirMenuDaPessoa(evento, item.peerId, tile);
+    }
+
+    function abrirMenuDaPessoa(evento, peerId, alvoTelaCheia) {
+      const eu = peerId === myPeerId;
+      const itens = [];
+
+      if (alvoTelaCheia) {
+        itens.push({ label: 'Abrir em tela cheia', aoClicar: () => telaCheia(alvoTelaCheia) });
+      }
+
+      if (!eu) {
+        const mutado = mutadosPorMim.has(peerId);
+        itens.push({ tipo: 'separador' });
+        itens.push({
+          tipo: 'slider',
+          label: 'Volume da voz',
+          valor: volumeDe(peerId),
+          aoMudar: (v) => { volumePorPeer.set(peerId, v); syncAudio(); },
+        });
+        itens.push({
+          label: mutado ? 'Voltar a ouvir esta pessoa' : 'Silenciar esta pessoa',
+          perigo: !mutado,
+          aoClicar: () => {
+            if (mutado) mutadosPorMim.delete(peerId); else mutadosPorMim.add(peerId);
+            render();
+          },
+        });
+      }
+
+      if (itens.length) abrirMenu(evento, rotulo(peerId), itens);
+    }
+
+    // Menu de um compartilhamento de tela — o do palco ou o da miniatura.
+    function abrirMenuDaTela(evento, dono, alvoTelaCheia) {
+      const meu = dono === myPeerId;
+      const itens = [];
+
+      if (alvoTelaCheia) {
+        itens.push({ label: 'Abrir em tela cheia', aoClicar: () => telaCheia(alvoTelaCheia) });
+      }
+
+      if (!meu) {
+        itens.push({ tipo: 'separador' });
+        itens.push({
+          tipo: 'slider',
+          label: 'Volume da tela',
+          valor: volumeDaTela,
+          aoMudar: (v) => { volumeDaTela = v; syncAudio(); },
+        });
+        if (telasIgnoradas.has(dono)) {
+          itens.push({
+            label: 'Voltar a ver este compartilhamento',
+            aoClicar: () => { telasIgnoradas.delete(dono); render(); },
+          });
+        } else {
+          itens.push({
+            label: 'Parar de ver este compartilhamento',
+            aoClicar: () => { telasIgnoradas.add(dono); render(); },
+          });
+        }
+        itens.push({ tipo: 'separador' });
+        itens.push({
+          label: 'Assumir o compartilhamento',
+          perigo: true,
+          aoClicar: () => pedirCompartilhamento(true),
+        });
+      } else if (sharingScreen) {
+        itens.push({ tipo: 'separador' });
+        itens.push({
+          label: 'Parar de compartilhar',
+          perigo: true,
+          aoClicar: () => stopSharing(),
+        });
+      }
+
+      if (itens.length) {
+        abrirMenu(evento, meu ? 'Sua tela' : 'Tela de ' + rotulo(dono), itens);
+      }
+    }
+
+    // Botão direito no palco: mesmo menu da tela que está sendo exibida.
+    stageScreenEl.oncontextmenu = (e) => {
+      const tela = telaNoPalco();
+      if (!tela) return;
+      e.preventDefault();
+      abrirMenuDaTela(e, tela.dono, stageScreenEl);
+    };
+    stageScreenEl.ondblclick = () => telaCheia(stageScreenEl);
 
     function renderControls() {
       if (!ws) return;
@@ -1555,6 +1943,9 @@
       // O microfone local mudo nunca acende, mesmo que o analisador ainda pegue
       // algo antes do enabled=false surtir efeito.
       if (!micEnabled) novo.delete(myPeerId);
+      // Falar conta como estar presente: quem passa a reunião inteira ouvindo e
+      // respondendo, sem tocar no mouse, não pode ser cortado por inatividade.
+      if (novo.has(myPeerId)) registrarAtividade();
 
       let mudou = novo.size !== falando.size;
       if (!mudou) {

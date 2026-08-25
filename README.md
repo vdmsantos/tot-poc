@@ -17,6 +17,21 @@ funciona: ninguém se conecta direto com ninguém, tudo passa pelo servidor.
   compartilhando a tela.
 - 🟢 **Quem está falando**: o quadro da pessoa e o avatar dela na lista ganham
   uma borda verde enquanto ela fala.
+- 🏷️ **Nome**: informado na entrada e lembrado pelo navegador. É opcional —
+  sem nome você aparece como "Participante N".
+- 🎚️ **Botão direito em alguém** (no quadro ou na lista): volume só daquela
+  pessoa, silenciar só pra você e abrir em tela cheia.
+- 🖥️ **Botão direito num compartilhamento**: volume do áudio da tela, tela
+  cheia, **parar de ver** (ele vira uma miniatura ao lado das câmeras, clicável
+  pra voltar a assistir) e **assumir o compartilhamento**.
+- 🔇 **Não ouvir ninguém** (ensurdecer), que também muta o seu microfone, como
+  no Discord.
+- ⛶ **Tela cheia** por duplo clique em qualquer quadro ou na tela compartilhada.
+- 💤 **Corte por inatividade**: 30 minutos sem mexer no mouse, teclar ou falar e
+  a pessoa volta pra tela de entrada, liberando a sala.
+
+> Volume, silenciar e "parar de ver" são preferências **só do seu navegador** —
+> não mudam nada para os outros.
 
 ## A interface
 
@@ -124,15 +139,27 @@ sempre revalidar antes de reaproveitar o que tem guardado.
 | `candidate`            | candidato ICE                                                   |
 | `screenshare-granted`  | pode capturar a tela                                            |
 | `screenshare-rejected` | outra pessoa já está compartilhando                             |
+| `screenshare-taken`    | alguém assumiu a sua vez; pare de transmitir                    |
+| `kicked`               | você saiu da sala (hoje só por `inatividade`)                   |
 
-| Navegador → servidor  | Conteúdo                             |
-| --------------------- | ------------------------------------ |
-| `answer`              | resposta SDP                         |
-| `candidate`           | candidato ICE                        |
-| `screenshare-request` | pede a vez de compartilhar a tela    |
-| `screenshare-stop`    | devolve a vez                        |
-| `camera-state`        | `on` / `off`                         |
-| `mic-state`           | `live` / `muted`                     |
+| Navegador → servidor  | Conteúdo                                             |
+| --------------------- | ---------------------------------------------------- |
+| `answer`              | resposta SDP                                          |
+| `candidate`           | candidato ICE                                         |
+| `screenshare-request` | pede a vez de compartilhar a tela                     |
+| `screenshare-steal`   | assume a vez de quem já está compartilhando           |
+| `screenshare-stop`    | devolve a vez                                         |
+| `camera-state`        | `on` / `off`                                          |
+| `mic-state`           | `live` / `muted`                                      |
+| `set-name`            | nome escolhido (vazio = anônimo)                      |
+| `activity`            | sinal de vida, contra o corte por inatividade         |
+
+Volume, silenciar alguém e "parar de ver" não aparecem aqui de propósito: são
+decisões de quem está ouvindo e nunca saem do navegador.
+
+O corte por inatividade usa `activity` em vez do próprio WebSocket porque
+responder as ofertas não prova que tem alguém ali — o navegador faz isso
+sozinho com a aba esquecida aberta.
 
 ## Variáveis de ambiente
 
