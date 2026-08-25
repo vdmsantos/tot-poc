@@ -41,6 +41,16 @@ const (
 	kindCam         = "cam"
 )
 
+// protocolVersion muda sempre que o formato das mensagens de sinalização muda.
+// O servidor manda essa versão no "welcome" e o navegador compara com a dele:
+// se não bater, ele recarrega a página sozinho para buscar o cliente novo.
+//
+// Isso existe porque já aconteceu: o servidor foi atualizado, o navegador
+// continuou com o index.html antigo em cache, e a sala ficou meio funcionando
+// (o áudio passava, mas a lista de participantes e as câmeras não apareciam)
+// sem nenhum erro visível. Ver também noCache, que evita o cache velho.
+const protocolVersion = "3"
+
 var (
 	upgrader = websocket.Upgrader{CheckOrigin: checkOrigin}
 
@@ -68,13 +78,17 @@ type peerState struct {
 	pc *webrtc.PeerConnection
 	ws *threadSafeWriter
 
-	// Senders reservados desta pessoa (tela-vídeo, tela-áudio e câmera).
+	// Canais reservados desta pessoa (microfone, áudio da tela, tela e câmera).
 	// Cada um nasce com uma track "placeholder" interna do Pion, que não tem
 	// dono em `tracks` — então a limpeza genérica de syncLocked os removeria
-	// como se fossem lixo, liberando o slot pro Pion reaproveitar pra
-	// encaminhar a mídia de OUTRA pessoa (embaralhando tela e câmera entre
-	// participantes). Por isso eles são pulados explicitamente.
-	ownSenders map[*webrtc.RTPSender]bool
+	// como se fossem lixo, liberando a m-line pro Pion reaproveitar pra
+	// encaminhar a mídia de OUTRA pessoa. Quando isso acontece o navegador não
+	// consegue mais casar a mídia com o dono (embaralha tela com câmera, ou
+	// deixa um microfone mudo), então eles são pulados explicitamente.
+	//
+	// A chave é a transceiver, não o sender: ao reaproveitar uma m-line o Pion
+	// cria um sender NOVO, então comparar senders não detectaria nada.
+	ownTransceivers map[*webrtc.RTPTransceiver]bool
 
 	// Estado declarado pelo próprio navegador. O servidor só repassa: é isso
 	// que diz aos outros se a câmera está realmente ligada ou se a track
@@ -119,6 +133,17 @@ type trackInfo struct {
 	StreamID string `json:"streamId"`
 	PeerID   string `json:"peerId"`
 	Kind     string `json:"kind"`
+
+	// Mid é a m-line em que ESTE destinatário recebe essa mídia — por isso o
+	// retrato é montado por pessoa, e não uma vez só para a sala toda.
+	//
+	// O navegador precisa do mid porque o id da track não é confiável do lado
+	// de quem recebe: o Chrome fixa receiver.track.id quando cria a
+	// transceiver e não atualiza se a m-line for reaproveitada para outra
+	// mídia depois. O mid, esse sim, sempre aponta para o lugar certo.
+	// Fica vazio enquanto a m-line ainda não foi negociada; nesse caso o
+	// navegador cai para a busca pelo id.
+	Mid string `json:"mid,omitempty"`
 }
 
 type peerInfo struct {
@@ -133,8 +158,15 @@ type roomState struct {
 	ScreenSharer string      `json:"screenSharer"`
 }
 
+// welcomeInfo é a primeira mensagem que o navegador recebe: quem ele é nesta
+// sala e qual versão do protocolo o servidor fala.
+type welcomeInfo struct {
+	PeerID   string `json:"peerId"`
+	Protocol string `json:"protocol"`
+}
+
 func main() {
-	http.Handle("/", http.FileServer(http.Dir("./web")))
+	http.Handle("/", noCache(http.FileServer(http.Dir("./web"))))
 	http.HandleFunc("/ws", websocketHandler)
 	http.HandleFunc("/config", configHandler) // entrega STUN/TURN para o navegador
 
@@ -151,6 +183,23 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Fatal(server.ListenAndServe())
+}
+
+// noCache obriga o navegador a revalidar os arquivos de web/ a cada carga.
+//
+// O http.FileServer sozinho manda só Last-Modified, sem Cache-Control — e com
+// isso o navegador aplica cache heurístico e pode servir um index.html antigo
+// direto do cache, sem nem perguntar ao servidor. Foi exatamente o que
+// aconteceu depois de uma atualização do protocolo: servidor novo conversando
+// com cliente velho, sala meio quebrada e nenhum erro à vista.
+//
+// "no-cache" não proíbe guardar o arquivo, só exige revalidar antes de usar —
+// então na prática continua sendo um 304 barato quando nada mudou.
+func noCache(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		h.ServeHTTP(w, r)
+	})
 }
 
 // checkOrigin só aceita websockets vindos da própria página (ou de origens
@@ -262,7 +311,12 @@ func joinRoom(p *peerState) error {
 	defer roomLock.Unlock()
 
 	peers = append(peers, p)
-	return p.ws.WriteJSON(&websocketMessage{Event: "welcome", Data: p.id})
+
+	data, err := json.Marshal(welcomeInfo{PeerID: p.id, Protocol: protocolVersion})
+	if err != nil {
+		return err
+	}
+	return p.ws.WriteJSON(&websocketMessage{Event: "welcome", Data: string(data)})
 }
 
 // leaveRoom limpa tudo que era desta pessoa: a conexão, as tracks publicadas e
@@ -317,7 +371,25 @@ func broadcastState() {
 }
 
 // broadcastStateLocked exige roomLock já tomado (leitura ou escrita).
+//
+// O retrato é montado uma vez por pessoa porque o mid de cada mídia depende de
+// quem está recebendo: a mesma câmera chega numa m-line diferente pra cada
+// destinatário.
 func broadcastStateLocked() {
+	for _, p := range peers {
+		data, err := json.Marshal(stateForLocked(p))
+		if err != nil {
+			log.Printf("serializando estado da sala: %v", err)
+			return
+		}
+		if err := p.ws.WriteJSON(&websocketMessage{Event: "state", Data: string(data)}); err != nil {
+			log.Printf("enviando estado para %s: %v", p.id, err)
+		}
+	}
+}
+
+// stateForLocked monta o retrato da sala do ponto de vista de dest.
+func stateForLocked(dest *peerState) roomState {
 	state := roomState{
 		Peers:  make([]peerInfo, 0, len(peers)),
 		Tracks: make([]trackInfo, 0, len(tracks)),
@@ -325,29 +397,40 @@ func broadcastStateLocked() {
 	for _, p := range peers {
 		state.Peers = append(state.Peers, peerInfo{PeerID: p.id, Muted: p.muted, CameraOn: p.cameraOn})
 	}
+
+	mids := midsFor(dest)
 	for id, t := range tracks {
 		state.Tracks = append(state.Tracks, trackInfo{
 			ID:       id,
 			StreamID: t.local.StreamID(),
 			PeerID:   t.peerID,
 			Kind:     t.kind,
+			Mid:      mids[id],
 		})
 	}
 	if screenSharer != nil {
 		state.ScreenSharer = screenSharer.id
 	}
+	return state
+}
 
-	data, err := json.Marshal(state)
-	if err != nil {
-		log.Printf("serializando estado da sala: %v", err)
-		return
-	}
-	msg := &websocketMessage{Event: "state", Data: string(data)}
-	for _, p := range peers {
-		if err := p.ws.WriteJSON(msg); err != nil {
-			log.Printf("enviando estado para %s: %v", p.id, err)
+// midsFor diz, para cada mídia que este participante recebe, em qual m-line
+// ela chega. Um mid vazio (ainda não negociado) simplesmente não entra.
+func midsFor(p *peerState) map[string]string {
+	out := map[string]string{}
+	for _, transceiver := range p.pc.GetTransceivers() {
+		if p.ownTransceivers[transceiver] {
+			continue // canal reservado: não carrega mídia de outra pessoa
+		}
+		sender := transceiver.Sender()
+		if sender == nil || sender.Track() == nil {
+			continue
+		}
+		if mid := transceiver.Mid(); mid != "" {
+			out[sender.Track().ID()] = mid
 		}
 	}
+	return out
 }
 
 // signalPeers renegocia com quem precisa e depois publica o retrato da sala.
@@ -402,8 +485,12 @@ func syncLocked() {
 
 			// O que este participante já está recebendo hoje.
 			existing := map[string]bool{}
-			for _, sender := range p.pc.GetSenders() {
-				if sender.Track() == nil || p.ownSenders[sender] {
+			for _, transceiver := range p.pc.GetTransceivers() {
+				if p.ownTransceivers[transceiver] {
+					continue
+				}
+				sender := transceiver.Sender()
+				if sender == nil || sender.Track() == nil {
 					continue
 				}
 				existing[sender.Track().ID()] = true
@@ -524,8 +611,20 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	// transceivers que ele criou (áudio, áudio, vídeo, vídeo, na mesma ordem),
 	// e é por essa correspondência que o servidor sabe se um vídeo que chegou é
 	// tela ou câmera.
-	if _, err = peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio,
-		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly}); err != nil {
+	//
+	// Todas as quatro são "sendrecv", inclusive a do microfone — que só precisa
+	// receber. O motivo é sutil: uma transceiver "recvonly" nasce sem sender, e
+	// o Pion reaproveita justamente as transceivers sem sender quando precisa
+	// de uma m-line pra encaminhar a mídia de outra pessoa. O microfone de um
+	// participante acabava grudado na m-line do microfone de quem recebe — e o
+	// Chrome fixa o receiver.track.id na criação da transceiver, sem atualizar
+	// quando a m-line é reciclada. Resultado: o id anunciado pelo servidor
+	// nunca batia com o do navegador e o áudio daquela pessoa não tocava.
+	// Nascer com uma track placeholder (o que "sendrecv" faz) tira a transceiver
+	// da fila de reaproveitamento. Ver também ownSenders e trackInfo.Mid.
+	micTransceiver, err := peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio,
+		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv})
+	if err != nil {
 		log.Print(err)
 		return
 	}
@@ -552,10 +651,11 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 		id: nextPeerID(),
 		pc: peerConnection,
 		ws: c,
-		ownSenders: map[*webrtc.RTPSender]bool{
-			screenAudioTransceiver.Sender(): true,
-			screenTransceiver.Sender():      true,
-			cameraTransceiver.Sender():      true,
+		ownTransceivers: map[*webrtc.RTPTransceiver]bool{
+			micTransceiver:         true,
+			screenAudioTransceiver: true,
+			screenTransceiver:      true,
+			cameraTransceiver:      true,
 		},
 	}
 
@@ -588,6 +688,8 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	peerConnection.OnTrack(func(t *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		kind := kindMic
 		switch receiver {
+		case micTransceiver.Receiver():
+			kind = kindMic
 		case screenAudioTransceiver.Receiver():
 			kind = kindScreenAudio
 		case screenTransceiver.Receiver():

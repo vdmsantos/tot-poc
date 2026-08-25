@@ -1,10 +1,12 @@
-﻿package main
+package main
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -173,8 +175,16 @@ func (c *testClient) readLoop() {
 
 		switch m.Event {
 		case "welcome":
+			var info welcomeInfo
+			if err := json.Unmarshal([]byte(m.Data), &info); err != nil {
+				c.errf("welcome inválido: %v", err)
+				continue
+			}
+			if info.Protocol != protocolVersion {
+				c.errf("protocolo %q, esperava %q", info.Protocol, protocolVersion)
+			}
 			c.mu.Lock()
-			c.peerID = m.Data
+			c.peerID = info.PeerID
 			c.mu.Unlock()
 
 		case "state":
@@ -299,9 +309,315 @@ func kindsDe(s roomState, peerID string) map[string]bool {
 	return out
 }
 
+// peerNoRetrato acha um participante no retrato da sala.
+func peerNoRetrato(s roomState, peerID string) *peerInfo {
+	for i := range s.Peers {
+		if s.Peers[i].PeerID == peerID {
+			return &s.Peers[i]
+		}
+	}
+	return nil
+}
+
+// peerNaSala acha o peerState do servidor pelo id.
+func peerNaSala(peerID string) *peerState {
+	roomLock.RLock()
+	defer roomLock.RUnlock()
+	for _, p := range peers {
+		if p.id == peerID {
+			return p
+		}
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Testes
 // ---------------------------------------------------------------------------
+
+// TestMidiaChegaEmMLinhaPropria é o teste que faltava e teria pego o bug do
+// microfone mudo.
+//
+// Não basta o servidor "mandar" a mídia: ela precisa chegar numa m-line que o
+// navegador consiga casar com o retrato da sala. Os quatro canais reservados
+// de cada pessoa (microfone, áudio da tela, tela e câmera) NÃO podem ser
+// reaproveitados pra encaminhar a mídia de outra pessoa — quando isso
+// acontecia, o navegador continuava com o id de track antigo daquela m-line e
+// simplesmente não tocava o áudio de quem falava.
+func TestMidiaChegaEmMLinhaPropria(t *testing.T) {
+	resetRoom(t)
+	wsURL := startServer(t)
+
+	eu := newTestClient(t, wsURL, "eu")
+	colega := newTestClient(t, wsURL, "colega")
+	for _, c := range []*testClient{eu, colega} {
+		c := c
+		c.stream(c.mic, 20*time.Millisecond)
+		c.stream(c.camera, 33*time.Millisecond)
+		waitFor(t, 20*time.Second, c.name+" entrar", func() error {
+			if c.id() == "" {
+				return fmt.Errorf("sem welcome")
+			}
+			return nil
+		})
+	}
+
+	waitFor(t, 30*time.Second, "cada mídia chegar na m-line certa", func() error {
+		for _, c := range []*testClient{eu, colega} {
+			s := c.snapshot()
+			dest := peerNaSala(c.id())
+			if dest == nil {
+				return fmt.Errorf("%s sumiu da sala", c.name)
+			}
+
+			vistos := map[string]string{} // mid -> id da track
+			for _, tr := range s.Tracks {
+				if tr.PeerID == c.id() {
+					continue // a própria mídia não volta
+				}
+				if tr.Mid == "" {
+					return fmt.Errorf("%s: track %s de %s sem mid", c.name, tr.Kind, tr.PeerID)
+				}
+
+				// O canal reservado de quem recebe nunca pode ser usado pra
+				// carregar a mídia de outra pessoa.
+				transceiver := transceiverDaTrack(dest, tr.ID)
+				if transceiver == nil {
+					return fmt.Errorf("%s: nenhuma m-line carrega a track %s de %s", c.name, tr.Kind, tr.PeerID)
+				}
+				if dest.ownTransceivers[transceiver] {
+					return fmt.Errorf("%s: a track %s de %s foi parar num canal reservado (mid %s)",
+						c.name, tr.Kind, tr.PeerID, tr.Mid)
+				}
+
+				// Duas mídias diferentes não podem dividir a mesma m-line.
+				if outra, ok := vistos[tr.Mid]; ok && outra != tr.ID {
+					return fmt.Errorf("%s: mid %s carrega duas mídias (%s e %s)", c.name, tr.Mid, outra, tr.ID)
+				}
+				vistos[tr.Mid] = tr.ID
+			}
+
+			if len(vistos) < 2 {
+				return fmt.Errorf("%s recebeu %d mídias, esperava pelo menos 2 (mic + câmera)", c.name, len(vistos))
+			}
+		}
+		return nil
+	})
+}
+
+// transceiverDaTrack acha, na conexão de um participante, a m-line que carrega
+// determinada track.
+func transceiverDaTrack(p *peerState, trackID string) *webrtc.RTPTransceiver {
+	for _, tr := range p.pc.GetTransceivers() {
+		if s := tr.Sender(); s != nil && s.Track() != nil && s.Track().ID() == trackID {
+			return tr
+		}
+	}
+	return nil
+}
+
+// TestColegaApareceNaLista cobre o básico que precisa funcionar sempre: entrei
+// na sala, apareço; meu colega entra, ele aparece pra mim e eu pra ele — cada
+// um com o próprio peerId, sem se confundir com o do outro.
+func TestColegaApareceNaLista(t *testing.T) {
+	resetRoom(t)
+	wsURL := startServer(t)
+
+	eu := newTestClient(t, wsURL, "eu")
+	waitFor(t, 20*time.Second, "eu entrar e me ver na sala", func() error {
+		if eu.id() == "" {
+			return fmt.Errorf("sem welcome")
+		}
+		s := eu.snapshot()
+		if len(s.Peers) != 1 {
+			return fmt.Errorf("%d participantes, esperava 1", len(s.Peers))
+		}
+		if peerNoRetrato(s, eu.id()) == nil {
+			return fmt.Errorf("nao me encontrei no retrato")
+		}
+		return nil
+	})
+
+	colega := newTestClient(t, wsURL, "colega")
+	for _, c := range []*testClient{eu, colega} {
+		c := c
+		waitFor(t, 20*time.Second, c.name+" ver os dois participantes", func() error {
+			if c.id() == "" {
+				return fmt.Errorf("sem welcome")
+			}
+			s := c.snapshot()
+			if len(s.Peers) != 2 {
+				return fmt.Errorf("%d participantes, esperava 2", len(s.Peers))
+			}
+			if peerNoRetrato(s, eu.id()) == nil || peerNoRetrato(s, colega.id()) == nil {
+				return fmt.Errorf("retrato sem um dos dois: %+v", s.Peers)
+			}
+			return nil
+		})
+	}
+
+	if eu.id() == colega.id() {
+		t.Fatalf("os dois participantes receberam o mesmo peerId (%q)", eu.id())
+	}
+}
+
+// TestCameraDoColegaApareceParaMim cobre o outro sintoma: ligar a câmera tem
+// que fazer o colega enxergar a minha, com o dono e o tipo certos — e desligar
+// tem que sumir com ela.
+func TestCameraDoColegaApareceParaMim(t *testing.T) {
+	resetRoom(t)
+	wsURL := startServer(t)
+
+	eu := newTestClient(t, wsURL, "eu")
+	colega := newTestClient(t, wsURL, "colega")
+	for _, c := range []*testClient{eu, colega} {
+		c := c
+		waitFor(t, 20*time.Second, c.name+" entrar", func() error {
+			if c.id() == "" {
+				return fmt.Errorf("sem welcome")
+			}
+			return nil
+		})
+	}
+
+	colega.stream(colega.mic, 20*time.Millisecond)
+	colega.stream(colega.camera, 33*time.Millisecond)
+	colega.send("camera-state", "on")
+
+	waitFor(t, 25*time.Second, "eu ver a câmera do colega", func() error {
+		s := eu.snapshot()
+		p := peerNoRetrato(s, colega.id())
+		if p == nil {
+			return fmt.Errorf("colega sumiu do retrato")
+		}
+		if !p.CameraOn {
+			return fmt.Errorf("colega ainda marcado sem câmera")
+		}
+		kinds := kindsDe(s, colega.id())
+		if !kinds[kindCam] {
+			return fmt.Errorf("track de câmera do colega não chegou (tem %v)", kinds)
+		}
+		if !kinds[kindMic] {
+			return fmt.Errorf("track de microfone do colega não chegou (tem %v)", kinds)
+		}
+		// A câmera do colega não pode ser atribuída a mim.
+		if kindsDe(s, eu.id())[kindCam] {
+			return fmt.Errorf("minha própria câmera apareceu no retrato sem eu ter ligado")
+		}
+		return nil
+	})
+
+	colega.send("camera-state", "off")
+	waitFor(t, 10*time.Second, "a câmera do colega sumir quando ele desliga", func() error {
+		p := peerNoRetrato(eu.snapshot(), colega.id())
+		if p == nil {
+			return fmt.Errorf("colega sumiu do retrato")
+		}
+		if p.CameraOn {
+			return fmt.Errorf("colega ainda marcado com câmera ligada")
+		}
+		return nil
+	})
+}
+
+// TestMicStateChegaNosOutros cobre o indicador de mutado na lista.
+func TestMicStateChegaNosOutros(t *testing.T) {
+	resetRoom(t)
+	wsURL := startServer(t)
+
+	eu := newTestClient(t, wsURL, "eu")
+	colega := newTestClient(t, wsURL, "colega")
+	for _, c := range []*testClient{eu, colega} {
+		c := c
+		waitFor(t, 20*time.Second, c.name+" entrar", func() error {
+			if c.id() == "" {
+				return fmt.Errorf("sem welcome")
+			}
+			return nil
+		})
+	}
+
+	colega.send("mic-state", "muted")
+	waitFor(t, 10*time.Second, "eu ver o colega mutado", func() error {
+		p := peerNoRetrato(eu.snapshot(), colega.id())
+		if p == nil {
+			return fmt.Errorf("colega sumiu do retrato")
+		}
+		if !p.Muted {
+			return fmt.Errorf("colega ainda aparece sem mute")
+		}
+		return nil
+	})
+
+	colega.send("mic-state", "live")
+	waitFor(t, 10*time.Second, "eu ver o colega desmutar", func() error {
+		p := peerNoRetrato(eu.snapshot(), colega.id())
+		if p == nil {
+			return fmt.Errorf("colega sumiu do retrato")
+		}
+		if p.Muted {
+			return fmt.Errorf("colega continua marcado como mutado")
+		}
+		return nil
+	})
+}
+
+// TestPaginaNaoVemDoCache trava o que causou a sala meio quebrada depois da
+// última atualização: o index.html vinha do cache do navegador, cliente velho
+// conversando com servidor novo. O navegador precisa ser obrigado a revalidar.
+func TestPaginaNaoVemDoCache(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(noCache(http.FileServer(http.Dir(dir))))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+
+	cc := resp.Header.Get("Cache-Control")
+	if !strings.Contains(cc, "no-cache") {
+		t.Errorf("Cache-Control = %q, precisa conter no-cache", cc)
+	}
+}
+
+// TestWelcomeTrazVersaoDoProtocolo garante que o navegador consegue perceber
+// que está desatualizado (e se recarregar) em vez de ficar meio funcionando.
+func TestWelcomeTrazVersaoDoProtocolo(t *testing.T) {
+	resetRoom(t)
+	wsURL := startServer(t)
+
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer ws.Close()
+
+	_ = ws.SetReadDeadline(time.Now().Add(15 * time.Second))
+	var m websocketMessage
+	if err := ws.ReadJSON(&m); err != nil {
+		t.Fatalf("lendo primeira mensagem: %v", err)
+	}
+	if m.Event != "welcome" {
+		t.Fatalf("primeira mensagem foi %q, esperava welcome", m.Event)
+	}
+
+	var info welcomeInfo
+	if err := json.Unmarshal([]byte(m.Data), &info); err != nil {
+		t.Fatalf("welcome não é JSON: %v (data=%q)", err, m.Data)
+	}
+	if info.Protocol != protocolVersion {
+		t.Errorf("protocolo %q, esperava %q", info.Protocol, protocolVersion)
+	}
+	if info.PeerID == "" {
+		t.Error("welcome veio sem peerId")
+	}
+}
 
 // TestTresParticipantesComCameraETela é o cenário que quebrava: três pessoas
 // entram, todas ligam a câmera e uma compartilha a tela. Todo mundo tem que

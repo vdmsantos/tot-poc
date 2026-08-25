@@ -78,12 +78,26 @@ exclusividade do compartilhamento de tela e a limpeza da mídia de quem sai.
   a cada mudança o servidor manda o **retrato completo da sala** (evento
   `state`) — participantes, mídias publicadas e quem está com a tela. Quem
   acaba de entrar recebe exatamente a mesma coisa que quem já estava lá.
+- Cada mídia do retrato vem com o **`mid`** (a m-line) em que ela chega para
+  aquele destinatário — por isso o retrato é montado por pessoa. O navegador
+  precisa disso porque o id da track não é confiável de quem recebe: o Chrome
+  fixa `receiver.track.id` quando cria a transceiver e não atualiza se aquela
+  m-line for reaproveitada para outra mídia depois.
+
+### Versão do protocolo
+
+`protocolVersion` (no `main.go`) e `PROTOCOL` (no `index.html`) precisam ser
+iguais e devem ser incrementados sempre que o formato das mensagens mudar. O
+servidor manda a versão no `welcome`; se o navegador estiver com uma página
+antiga em cache, ele percebe a diferença e se recarrega sozinho. Os arquivos
+de `web/` também são servidos com `Cache-Control: no-cache`, para o navegador
+sempre revalidar antes de reaproveitar o que tem guardado.
 
 ### Protocolo de sinalização
 
 | Servidor → navegador   | Conteúdo                                                       |
 | ---------------------- | -------------------------------------------------------------- |
-| `welcome`              | o `peerId` desta conexão                                        |
+| `welcome`              | `{peerId, protocol}` — quem você é e a versão do protocolo      |
 | `state`                | `{peers, tracks, screenSharer}` — o retrato completo da sala     |
 | `offer`                | oferta SDP (o SFU é sempre quem oferece)                        |
 | `candidate`            | candidato ICE                                                   |

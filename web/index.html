@@ -311,6 +311,12 @@
     };
     // ==================================================================
 
+    // Precisa bater com protocolVersion no main.go. Se o servidor falar outra
+    // versão, esta página está velha (veio do cache do navegador) e se recarrega
+    // sozinha — antes ela só ficava meio funcionando, sem erro nenhum: o áudio
+    // passava, mas a lista de participantes e as câmeras nunca apareciam.
+    const PROTOCOL = '3';
+
     const joinBtn = document.getElementById('join');
     const shareBtn = document.getElementById('shareScreen');
     const cameraBtn = document.getElementById('cameraBtn');
@@ -364,6 +370,8 @@
     // compartilhando a tela. Como o servidor manda o retrato inteiro a cada
     // mudança, quem entra depois vê exatamente o mesmo que quem já estava.
     let room = { peers: [], tracks: [], screenSharer: '' };
+    let recebeuEstado = false;
+    let watchdogEstado = null;
 
     // Mídia que já chegou pelo WebRTC, por ID de track. O retrato da sala e o
     // ontrack podem chegar em qualquer ordem — a interface só desenha o que
@@ -378,6 +386,26 @@
       toastEl.hidden = false;
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => { toastEl.hidden = true; }, 4000);
+    }
+
+    // O servidor fala outra versão do protocolo: esta página veio do cache do
+    // navegador e está velha. Recarrega uma única vez (a flag na sessão evita
+    // laço infinito se, por algum motivo, a versão continuar sem bater).
+    function paginaDesatualizada(versaoServidor) {
+      console.warn(`protocolo do servidor = ${versaoServidor}, desta página = ${PROTOCOL}`);
+      if (ws) { ws.onclose = null; ws.close(); ws = null; }
+      if (pc) { pc.onconnectionstatechange = null; pc.close(); pc = null; }
+
+      if (sessionStorage.getItem('recarregadoPorVersao') === versaoServidor) {
+        hintEl.textContent = 'Esta página está desatualizada. Recarregue com Ctrl+Shift+R.';
+        hintEl.classList.add('error');
+        joinWrapEl.hidden = false;
+        voiceBarEl.hidden = true;
+        joinBtn.disabled = false;
+        return;
+      }
+      sessionStorage.setItem('recarregadoPorVersao', versaoServidor);
+      location.reload();
     }
 
     function send(event, data = '') {
@@ -479,6 +507,16 @@
         voiceBarEl.hidden = false;
         cameraBtn.disabled = false;
         render();
+
+        // Se o retrato da sala não chegar, alguma coisa está errada entre o
+        // navegador e o servidor. Melhor dizer isso na cara do que deixar a
+        // sala "meio funcionando" em silêncio.
+        clearTimeout(watchdogEstado);
+        watchdogEstado = setTimeout(() => {
+          if (!recebeuEstado) {
+            showToast('Não recebi o estado da sala. Recarregue a página (Ctrl+Shift+R).');
+          }
+        }, 6000);
       };
       ws.onclose = () => leaveRoom();
       ws.onerror = () => showToast('Conexão com o servidor caiu.');
@@ -495,15 +533,25 @@
         if (!m) return;
 
         switch (m.event) {
-          case 'welcome':
-            myPeerId = m.data;
+          case 'welcome': {
+            const info = JSON.parse(m.data);
+            if (info.protocol !== PROTOCOL) {
+              paginaDesatualizada(info.protocol);
+              return;
+            }
+            myPeerId = info.peerId;
+            // Versão bateu: libera a trava pra uma próxima atualização poder
+            // recarregar de novo quando for a vez dela.
+            sessionStorage.removeItem('recarregadoPorVersao');
             render();
             break;
+          }
 
           case 'state':
             room = JSON.parse(m.data);
             if (!Array.isArray(room.peers)) room.peers = [];
             if (!Array.isArray(room.tracks)) room.tracks = [];
+            recebeuEstado = true;
             render();
             break;
 
@@ -760,6 +808,8 @@
       videoEls.clear();
       mediaTracks.clear();
       room = { peers: [], tracks: [], screenSharer: '' };
+      recebeuEstado = false;
+      clearTimeout(watchdogEstado);
       ultimaGradeCameras = '';
       telaAtual = '';
 
@@ -885,12 +935,17 @@
     // Tudo é desenhado a partir do retrato da sala (room) cruzado com a mídia
     // que já chegou (mediaTracks). Como as duas coisas podem chegar em
     // qualquer ordem, render() é chamado nos dois casos e sempre converge.
+    // Cada parte é isolada: se uma quebrar, as outras continuam. Sem isso, um
+    // erro em qualquer canto derrubaria a tela inteira (inclusive o áudio, que
+    // é montado aqui) sem deixar rastro além do console.
     function render() {
-      renderParticipants();
-      syncAudio();
-      renderCameras();
-      renderScreen();
-      renderControls();
+      for (const parte of [renderParticipants, syncAudio, renderCameras, renderScreen, renderControls]) {
+        try {
+          parte();
+        } catch (e) {
+          console.error(`Erro em ${parte.name}:`, e);
+        }
+      }
     }
 
     function outrosParticipantes() {
@@ -903,10 +958,31 @@
       return i < 0 ? 'Participante' : `Participante ${i + 1}`;
     }
 
-    function trackDe(peerId, kind) {
-      const info = room.tracks.find(t => t.peerId === peerId && t.kind === kind);
+    function infoDe(peerId, kind) {
+      return room.tracks.find(t => t.peerId === peerId && t.kind === kind) || null;
+    }
+
+    // Acha a mídia que está chegando para um item do retrato da sala.
+    //
+    // O caminho bom é pelo mid (a m-line): ele sempre aponta pro lugar certo.
+    // O id da track NÃO serve sozinho — o navegador fixa receiver.track.id
+    // quando cria a transceiver e não atualiza se o servidor reaproveitar
+    // aquela m-line pra outra mídia depois; era assim que o microfone de um
+    // participante simplesmente não tocava. O id fica só como reserva pra
+    // quando o mid ainda não foi negociado deste lado.
+    function mediaDe(info) {
       if (!info) return null;
-      return mediaTracks.has(info.id) ? info.id : null;
+      if (info.mid && pc) {
+        const tr = pc.getTransceivers().find(t => t.mid === info.mid);
+        if (tr && tr.receiver && tr.receiver.track) return tr.receiver.track;
+      }
+      return mediaTracks.get(info.id) || null;
+    }
+
+    // Chave estável de cache dos elementos <audio>/<video>. Segue o mid quando
+    // existe, porque é ele que define de onde a mídia vem.
+    function chaveDe(info) {
+      return info.mid ? 'mid:' + info.mid : 'id:' + info.id;
     }
 
     function renderParticipants() {
@@ -962,17 +1038,20 @@
     // Cria (ou reaproveita) o <video> de uma track. Reaproveitar importa: se a
     // gente recriasse o elemento a cada render, o vídeo piscava a cada mudança
     // na sala.
-    function videoDe(trackId, mirror) {
-      let el = videoEls.get(trackId);
+    function videoDe(chave, media, mirror) {
+      if (!media) return null;
+      let el = videoEls.get(chave);
       if (!el) {
-        const media = mediaTracks.get(trackId);
-        if (!media) return null;
         el = document.createElement('video');
-        el.srcObject = new MediaStream([media]);
         el.autoplay = true;
         el.playsInline = true;
         el.muted = true; // o áudio vem pelos <audio>, não pelo <video>
-        videoEls.set(trackId, el);
+        videoEls.set(chave, el);
+      }
+      // A mesma m-line pode passar a carregar outra mídia depois de uma
+      // renegociação; nesse caso o elemento é reaproveitado, só troca a fonte.
+      if (!el.srcObject || el.srcObject.getTracks()[0] !== media) {
+        el.srcObject = new MediaStream([media]);
         el.play().catch(() => {});
       }
       el.classList.toggle('mirror', !!mirror);
@@ -988,25 +1067,29 @@
         const isMic = t.kind === 'mic';
         const isScreenAudio = t.kind === 'screen-audio' && room.screenSharer === t.peerId;
         if (!isMic && !isScreenAudio) continue;
-        const media = mediaTracks.get(t.id);
-        if (media) querido.set(t.id, media);
+        const media = mediaDe(t);
+        if (media) querido.set(chaveDe(t), media);
       }
 
-      for (const [id, el] of [...audioEls]) {
-        if (!querido.has(id)) {
+      for (const [chave, el] of [...audioEls]) {
+        if (!querido.has(chave)) {
           el.srcObject = null;
           el.remove();
-          audioEls.delete(id);
+          audioEls.delete(chave);
         }
       }
-      for (const [id, media] of querido) {
-        if (audioEls.has(id)) continue;
-        const el = document.createElement('audio');
-        el.srcObject = new MediaStream([media]);
-        el.autoplay = true;
-        audiosEl.appendChild(el);
-        el.play().catch(() => {});
-        audioEls.set(id, el);
+      for (const [chave, media] of querido) {
+        let el = audioEls.get(chave);
+        if (!el) {
+          el = document.createElement('audio');
+          el.autoplay = true;
+          audiosEl.appendChild(el);
+          audioEls.set(chave, el);
+        }
+        if (!el.srcObject || el.srcObject.getTracks()[0] !== media) {
+          el.srcObject = new MediaStream([media]);
+          el.play().catch(() => {});
+        }
       }
     }
 
@@ -1016,9 +1099,10 @@
       if (cameraOn && localCameraStream) itens.push({ key: 'local', label: 'Você' });
       for (const p of outrosParticipantes()) {
         if (!p.cameraOn) continue;
-        const trackId = trackDe(p.peerId, 'cam');
-        if (!trackId) continue; // ainda não chegou a mídia dessa câmera
-        itens.push({ key: trackId, label: rotulo(p.peerId) });
+        const info = infoDe(p.peerId, 'cam');
+        const media = mediaDe(info);
+        if (!media) continue; // ainda não chegou a mídia dessa câmera
+        itens.push({ key: chaveDe(info), media, label: rotulo(p.peerId) });
       }
 
       const assinatura = itens.map(i => i.key + '=' + i.label).join('|');
@@ -1043,7 +1127,7 @@
           }
           el.classList.add('mirror');
         } else {
-          el = videoDe(item.key, false);
+          el = videoDe(item.key, item.media, false);
         }
         if (el) cameraGridEl.appendChild(cameraTile(el, item.label));
       }
@@ -1065,16 +1149,19 @@
     function renderScreen() {
       // Só mostramos a tela de OUTRA pessoa — ver a própria tela dentro da
       // própria tela vira aquele efeito de espelho infinito.
-      let trackId = '';
+      let chave = '';
+      let media = null;
       if (room.screenSharer && room.screenSharer !== myPeerId) {
-        trackId = trackDe(room.screenSharer, 'screen') || '';
+        const info = infoDe(room.screenSharer, 'screen');
+        media = mediaDe(info);
+        if (media) chave = chaveDe(info);
       }
-      if (trackId === telaAtual) return;
-      telaAtual = trackId;
+      if (chave === telaAtual) return;
+      telaAtual = chave;
 
       screensEl.innerHTML = '';
-      if (trackId) {
-        const el = videoDe(trackId, false);
+      if (chave) {
+        const el = videoDe(chave, media, false);
         if (el) screensEl.appendChild(el);
       }
       podarVideos();
@@ -1083,13 +1170,12 @@
     // Solta os <video> de tracks que não existem mais na sala (a pessoa saiu,
     // ou parou de publicar aquela mídia).
     function podarVideos() {
-      const vivas = new Set(room.tracks.map(t => t.id));
-      for (const [id, el] of [...videoEls]) {
-        if (id === 'local') continue;
-        if (vivas.has(id) && mediaTracks.has(id)) continue;
+      const vivas = new Set(room.tracks.map(chaveDe));
+      for (const [chave, el] of [...videoEls]) {
+        if (chave === 'local' || vivas.has(chave)) continue;
         el.srcObject = null;
         el.remove();
-        videoEls.delete(id);
+        videoEls.delete(chave);
       }
     }
 
